@@ -13,6 +13,10 @@ fn main() -> Result<(), String> {
         "iterative_fib(10) = {}",
         run_iterative_fib_code(&mut jit, 10)?
     );
+    let a = 10;
+    let b = 3;
+    let result = run_mod_code(&mut jit, a, b)?;
+    println!("mod_test({}, {}) = {}", a, b, result); // 预期输出: 1
     run_hello(&mut jit)?;
     Ok(())
 }
@@ -34,6 +38,10 @@ fn run_hello(jit: &mut jit::JIT) -> Result<isize, String> {
     unsafe { run_code(jit, HELLO_CODE, ()) }
 }
 
+fn run_mod_code(jit: &mut jit::JIT, a: isize, b: isize) -> Result<isize, String> {
+    // run_code 是一个泛型函数，这里传入元组 (a, b) 作为 Toy 函数的参数
+    unsafe { run_code(jit, MOD_CODE, (a, b)) }
+}
 /// Executes the given code using the cranelift JIT compiler.
 ///
 /// Feeds the given input into the JIT compiled function and returns the resulting output.
@@ -114,4 +122,11 @@ const HELLO_CODE: &str = r#"
 fn hello() -> (r) {
     puts(&hello_string)
 }
+"#;
+
+/// Test function for the new modulo operator
+const MOD_CODE: &str = r#"
+    fn mod_test(a, b) -> (c) {
+        c = a % b
+    }
 "#;

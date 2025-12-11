@@ -1,23 +1,27 @@
 /// The AST node for expressions.
 pub enum Expr {
-    Literal(String),
-    Identifier(String),
-    Assign(String, Box<Expr>),
-    Eq(Box<Expr>, Box<Expr>),
-    Ne(Box<Expr>, Box<Expr>),
-    Lt(Box<Expr>, Box<Expr>),
-    Le(Box<Expr>, Box<Expr>),
-    Gt(Box<Expr>, Box<Expr>),
-    Ge(Box<Expr>, Box<Expr>),
-    Add(Box<Expr>, Box<Expr>),
-    Sub(Box<Expr>, Box<Expr>),
-    Mul(Box<Expr>, Box<Expr>),
-    Div(Box<Expr>, Box<Expr>),
-    IfElse(Box<Expr>, Vec<Expr>, Vec<Expr>),
-    WhileLoop(Box<Expr>, Vec<Expr>),
-    Call(String, Vec<Expr>),
-    GlobalDataAddr(String),
+    Literal(String),       // 字面量，例如数字 "123"
+    Identifier(String),    // 标识符，即变量名，例如 "x"
+    Assign(String, Box<Expr>),     // 赋值语句，例如 "x = 5"
+    Eq(Box<Expr>, Box<Expr>),      // 等于 (Equal) ==
+    Ne(Box<Expr>, Box<Expr>),       // 不等于 (Not Equal) !=
+    Lt(Box<Expr>, Box<Expr>),       // 小于 (Less Than) <
+    Le(Box<Expr>, Box<Expr>),       // 小于等于 (Less Equal) <=
+    Gt(Box<Expr>, Box<Expr>),       // 大于 (Greater Than) >
+    Ge(Box<Expr>, Box<Expr>),       // 大于等于 (Greater Equal) >=
+    Add(Box<Expr>, Box<Expr>),      // 加法 +
+    Sub(Box<Expr>, Box<Expr>),      // 减法 -
+    Mul(Box<Expr>, Box<Expr>),      // 乘法 *
+    Div(Box<Expr>, Box<Expr>),      // 除法 /
+    Rem(Box<Expr>, Box<Expr>),
+    IfElse(Box<Expr>, Vec<Expr>, Vec<Expr>),        // If-Else 结构：条件，Then块语句列表，Else块语句列表
+    WhileLoop(Box<Expr>, Vec<Expr>),            // While 循环：条件，循环体语句列表
+    Call(String, Vec<Expr>),                // 调用函数：函数名，参数列表
+    GlobalDataAddr(String),                 // 获取全局数据地址 (类似C语言的取地址 &)
 }
+
+//Box<Expr>必须有确定的大小,使用 Box（智能指针）将数据存储在堆上，指针大小是固定的
+//Vec<Expr>: 用于存储语句列表（代码块）或参数列表。
 
 peg::parser!(pub grammar parser() for str {
     pub rule function() -> (String, Vec<String>, String, Vec<Expr>)
@@ -69,6 +73,7 @@ peg::parser!(pub grammar parser() for str {
         --
         a:@ _ "*" _ b:(@) { Expr::Mul(Box::new(a), Box::new(b)) }
         a:@ _ "/" _ b:(@) { Expr::Div(Box::new(a), Box::new(b)) }
+        a:@ _ "%" _ b:(@) { Expr::Rem(Box::new(a), Box::new(b)) }
         --
         i:identifier() _ "(" args:((_ e:expression() _ {e}) ** ",") ")" { Expr::Call(i, args) }
         i:identifier() { Expr::Identifier(i) }

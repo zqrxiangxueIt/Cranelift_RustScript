@@ -224,7 +224,14 @@ impl<'a> FunctionTranslator<'a> {
                 let rhs = self.translate_expr(*rhs);
                 self.builder.ins().udiv(lhs, rhs)
             }
-
+            Expr::Rem(lhs, rhs) => {
+                // 1. 递归翻译左操作数
+                let lhs = self.translate_expr(*lhs);
+                // 2. 递归翻译右操作数
+                let rhs = self.translate_expr(*rhs);
+                // 3. 发射 urem 指令
+                self.builder.ins().urem(lhs, rhs)
+            }
             Expr::Eq(lhs, rhs) => self.translate_icmp(IntCC::Equal, *lhs, *rhs),
             Expr::Ne(lhs, rhs) => self.translate_icmp(IntCC::NotEqual, *lhs, *rhs),
             Expr::Lt(lhs, rhs) => self.translate_icmp(IntCC::SignedLessThan, *lhs, *rhs),
