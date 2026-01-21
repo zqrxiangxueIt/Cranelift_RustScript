@@ -1,6 +1,7 @@
 /// The AST node for expressions.
+#[derive(Debug, Clone, PartialEq)]
 pub enum Expr {
-    Literal(String),
+    Literal(String, Type), // Value, Type (Integer or Float)
     Identifier(String),
     Assign(String, Box<Expr>),
     Eq(Box<Expr>, Box<Expr>),
@@ -17,18 +18,32 @@ pub enum Expr {
     WhileLoop(Box<Expr>, Vec<Expr>),
     Call(String, Vec<Expr>),
     GlobalDataAddr(String),
+    Cast(Box<Expr>, Type),
+}
+
+#[derive(Debug, Clone, PartialEq, Copy)]
+pub enum Type {
+    I8,
+    I16,
+    I32,
+    I64,
+    I128,
+    F32,
+    F64,
 }
 
 peg::parser!(pub grammar parser() for str {
-    pub rule function() -> (String, Vec<String>, String, Vec<Expr>)
+    use super::{Expr, Type};
+
+    pub rule function() -> (String, Vec<(String, Type)>, (String, Type), Vec<Expr>)
         = [' ' | '\t' | '\n']* "fn" _ name:identifier() _
-        "(" params:((_ i:identifier() _ {i}) ** ",") ")" _
+        "(" params:((_ i:identifier() _ ":" _ t:type_name() _ {(i, t)}) ** ",") ")" _
         "->" _
-        "(" returns:(_ i:identifier() _ {i}) ")" _
+        "(" ret:(_ i:identifier() _ ":" _ t:type_name() _ {(i, t)}) ")" _
         "{" _ "\n"
         stmts:statements()
         _ "}" _ "\n" _
-        { (name, params, returns, stmts) }
+        { (name, params, ret, stmts) }
 
     rule statements() -> Vec<Expr>
         = s:(statement()*) { s }
@@ -70,17 +85,30 @@ peg::parser!(pub grammar parser() for str {
         a:@ _ "*" _ b:(@) { Expr::Mul(Box::new(a), Box::new(b)) }
         a:@ _ "/" _ b:(@) { Expr::Div(Box::new(a), Box::new(b)) }
         --
+        a:@ _ "as" _ t:type_name() { Expr::Cast(Box::new(a), t) }
+        --
         i:identifier() _ "(" args:((_ e:expression() _ {e}) ** ",") ")" { Expr::Call(i, args) }
         i:identifier() { Expr::Identifier(i) }
         l:literal() { l }
+        "(" _ e:expression() _ ")" { e }
     }
+
+    rule type_name() -> Type
+        = "i8" { Type::I8 }
+        / "i16" { Type::I16 }
+        / "i32" { Type::I32 }
+        / "i64" { Type::I64 }
+        / "i128" { Type::I128 }
+        / "f32" { Type::F32 }
+        / "f64" { Type::F64 }
 
     rule identifier() -> String
         = quiet!{ n:$(['a'..='z' | 'A'..='Z' | '_']['a'..='z' | 'A'..='Z' | '0'..='9' | '_']*) { n.to_owned() } }
         / expected!("identifier")
 
     rule literal() -> Expr
-        = n:$(['0'..='9']+) { Expr::Literal(n.to_owned()) }
+        = n:$(['0'..='9']+ "." ['0'..='9']+) { Expr::Literal(n.to_owned(), Type::F64) }
+        / n:$(['0'..='9']+) { Expr::Literal(n.to_owned(), Type::I64) }
         / "&" i:identifier() { Expr::GlobalDataAddr(i) }
 
     rule _() =  quiet!{[' ' | '\t']*}

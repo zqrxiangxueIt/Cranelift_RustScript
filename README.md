@@ -34,17 +34,16 @@ is being designed to support many other kinds of platforms in the future.
 
 ### A walkthrough
 
-First, let's take a quick look at the toy language in use. It's a very simple
-language, in which all variables have type `isize`. (Cranelift does have full
-support for other integer and floating-point types, so this is just to keep the
-toy language simple).
+First, let's take a quick look at the toy language in use. It's a simple
+language that supports multiple integer types (`i8`, `i16`, `i32`, `i64`, `i128`)
+and floating-point types (`f32`, `f64`).
 
 For a quick flavor, here's our
 [first example](./src/bin/toy.rs#L63)
 in the toy language:
 
 ```
-        fn foo(a, b) -> (c) {
+        fn foo(a: i64, b: i64) -> (c: i64) {
             c = if a {
                 if b {
                     30
@@ -66,7 +65,7 @@ The output of parsing is a [custom AST type](./src/frontend.rs#L1):
 
 ```rust
 pub enum Expr {
-    Literal(String),
+    Literal(String, Type),
     Identifier(String),
     Assign(String, Box<Expr>),
     Eq(Box<Expr>, Box<Expr>),
@@ -83,6 +82,7 @@ pub enum Expr {
     WhileLoop(Box<Expr>, Vec<Expr>),
     Call(String, Vec<Expr>),
     GlobalDataAddr(String),
+    Cast(Box<Expr>, Type),
 }
 ```
 
@@ -130,8 +130,7 @@ The `JIT`'s `compile` function takes a string containing a function in the toy
 language. It [parses](./src/jit.rs#L55) the string into an AST, and then
 [translates](./src/jit.rs#L58) the AST into Cranelift IR.
 
-Our toy language only supports one type, so we start by [declaring that
-type](./src/jit.rs#L123) for convenience.
+Our toy language supports multiple types, so we translate types directly from the AST to Cranelift types.
 
 We then start translating the function by adding [the function
 parameters](./src/jit.rs#L125) and [return types](./src/jit.rs#L131) to the
