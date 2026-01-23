@@ -2,39 +2,77 @@ use core::mem;
 use cranelift_jit_demo::jit;
 
 fn main() -> Result<(), String> {
-    // 程序主函数，实现toy语言的解释执行
+    // Program main function, implementing toy language execution
     let mut jit = jit::JIT::default();
     
-    println!("foo(1, 0) = {}", run_foo(&mut jit)?);    // 调用foo函数，参数为1和0，返回值为30
+    println!("foo(1, 0) = {}", run_foo(&mut jit)?);
     
     println!(
         "recursive_fib(10) = {}",
-        run_recursive_fib(&mut jit, 10)?    // 调用recursive_fib函数，参数为10，返回值为55
+        run_recursive_fib(&mut jit, 10)?
     );
     
     println!(
         "iterative_fib(10) = {}",
-        run_iterative_fib(&mut jit, 10)?    // 调用iterative_fib函数，参数为10，返回值为55
+        run_iterative_fib(&mut jit, 10)?
     );
     
     println!(
         "float_add(1.5, 2.5) = {}", 
-        run_float_add(&mut jit, 1.5, 2.5)?    // 调用float_add函数，参数为1.5和2.5，返回值为4.0
+        run_float_add(&mut jit, 1.5, 2.5)?
     );
     
     println!(
         "mixed_add(10, 2.5) = {}", 
-        run_mixed_add(&mut jit, 10, 2.5)?    // 调用mixed_add函数，参数为10和2.5，返回值为12.5
+        run_mixed_add(&mut jit, 10, 2.5, 2.5)?
     );
     
     run_hello(&mut jit)?;
+
+
+    println!(
+        "mul_div(10.0, 5.0) = {}",
+        run_mul_div(&mut jit, 10.0, 5.0)?
+    );
+
+    run_custom_string(&mut jit, "Customize String Test Success!")?;
+    
+    // --- New Tests ---
+    
+    println!("--- Running String Literal Test ---");
+    run_string_test(&mut jit)?;
+
+    println!("--- Running I128 Test ---");
+    run_i128_test(&mut jit)?;
+
+    println!("--- Running Complex Test ---");
+    run_complex_test(&mut jit)?;
+    
+    println!("--- Running Array Test ---");
+    run_array_test(&mut jit)?;
+
     Ok(())
 }
 
-fn run_foo(jit: &mut jit::JIT) -> Result<i64, String> {     //输入参数为i64类型的a和b，返回值为i64类型的c
+fn run_i128_test(jit: &mut jit::JIT) -> Result<i64, String> {
     unsafe {
-        let code_ptr = jit.compile(FOO_CODE)?;     // 编译FOO_CODE代码，返回函数指针code_ptr
-        let code_fn = mem::transmute::<_, extern "C" fn(i64, i64) -> i64>(code_ptr);     // 将函数指针转换为extern "C" fn(i64, i64) -> i64类型的函数指针
+        let code_ptr = jit.compile(I128_TEST_CODE)?;
+        let code_fn = mem::transmute::<_, extern "C" fn() -> i64>(code_ptr);
+        Ok(code_fn())
+    }
+}
+
+const I128_TEST_CODE: &str = r#"
+    fn i128_test() -> (r: i64) {
+        x = 100 as i128
+        r = x as i64
+    }
+"#;
+
+fn run_foo(jit: &mut jit::JIT) -> Result<i64, String> {
+    unsafe {
+        let code_ptr = jit.compile(FOO_CODE)?;
+        let code_fn = mem::transmute::<_, extern "C" fn(i64, i64) -> i64>(code_ptr);
         Ok(code_fn(1, 0))  
     }
 }
@@ -63,23 +101,81 @@ fn run_float_add(jit: &mut jit::JIT, a: f64, b: f64) -> Result<f64, String> {
     }
 }
 
-fn run_mixed_add(jit: &mut jit::JIT, a: i32, b: f64) -> Result<f64, String> {
+fn run_mixed_add(jit: &mut jit::JIT, a: i32, b: f64, c: f64) -> Result<f64, String> {
     unsafe {
         let code_ptr = jit.compile(MIXED_ADD_CODE)?;
-        let code_fn = mem::transmute::<_, extern "C" fn(i32, f64) -> f64>(code_ptr);
-        Ok(code_fn(a, b))
+        let code_fn = mem::transmute::<_, extern "C" fn(i32, f64, f64) -> f64>(code_ptr);
+        Ok(code_fn(a, b, c))
     }
 }
 
 fn run_hello(jit: &mut jit::JIT) -> Result<i64, String> {
-    jit.create_data("hello_string", "hello world!\0".as_bytes().to_vec())?;   //在内存中开辟一块区域 ，存放我们想要用的字符串数据
+    jit.create_data("hello_string", "hello world!\0".as_bytes().to_vec())?;
     unsafe {
         let code_ptr = jit.compile(HELLO_CODE)?;
         let code_fn = mem::transmute::<_, extern "C" fn() -> i64>(code_ptr);
         Ok(code_fn())
     }
 }
-// FOO_CODE: 实现一个简单的函数foo，根据输入参数a和b返回不同的结果，同时对结果进行加2操作
+
+fn run_mul_div(jit: &mut jit::JIT, a: f64, b: f64) -> Result<f64, String> {
+    unsafe {
+        let code_ptr = jit.compile(MUL_DIV_CODE)?;
+        let code_fn = mem::transmute::<_, extern "C" fn(f64, f64) -> f64>(code_ptr);
+        Ok(code_fn(a, b))
+    }
+}
+
+fn run_custom_string(jit: &mut jit::JIT, msg: &str) -> Result<i64, String> {
+    let mut msg_bytes = msg.as_bytes().to_vec();
+    msg_bytes.push(0); // Null terminator
+    jit.create_data("custom_msg", msg_bytes)?;
+    unsafe {
+        let code_ptr = jit.compile(CUSTOM_STRING_CODE)?;
+        let code_fn = mem::transmute::<_, extern "C" fn() -> i64>(code_ptr);
+        Ok(code_fn())
+    }
+}
+
+fn run_string_test(jit: &mut jit::JIT) -> Result<i64, String> {
+    unsafe {
+        let code_ptr = jit.compile(STRING_TEST_CODE)?;
+        let code_fn = mem::transmute::<_, extern "C" fn() -> i64>(code_ptr);
+        Ok(code_fn())
+    }
+}
+
+fn run_complex_test(jit: &mut jit::JIT) -> Result<i64, String> {
+    unsafe {
+        let code_ptr = jit.compile(COMPLEX_TEST_CODE)?;
+        // Returns status (i64)
+        let code_fn = mem::transmute::<_, extern "C" fn() -> i64>(code_ptr);
+        let result = code_fn();
+        
+        println!("Complex Test Status: {}", result);
+        
+        if result == 1 {
+             Ok(result)
+        } else {
+             Err(format!("Complex test failed"))
+        }
+    }
+}
+
+fn run_array_test(jit: &mut jit::JIT) -> Result<i64, String> {
+     unsafe {
+        let code_ptr = jit.compile(ARRAY_TEST_CODE)?;
+        let code_fn = mem::transmute::<_, extern "C" fn() -> i64>(code_ptr);
+        let result = code_fn();
+        println!("Array test result: {}", result);
+        if result == 30 {
+            Ok(result)
+        } else {
+            Err(format!("Array test failed: expected 30, got {}", result))
+        }
+    }
+}
+
 const FOO_CODE: &str = r#"
     fn foo(a: i64, b: i64) -> (c: i64) {
         c = if a {
@@ -94,7 +190,7 @@ const FOO_CODE: &str = r#"
         c = c + 2
     }
 "#;
-// RECURSIVE_FIB_CODE: 实现一个递归函数recursive_fib，计算斐波那契数列的第n项
+
 const RECURSIVE_FIB_CODE: &str = r#"
     fn recursive_fib(n: i64) -> (r: i64) {
         r = if n == 0 {
@@ -108,7 +204,7 @@ const RECURSIVE_FIB_CODE: &str = r#"
             }
     }
 "#;
-// ITERATIVE_FIB_CODE: 实现一个迭代函数iterative_fib，计算斐波那契数列的第n项
+
 const ITERATIVE_FIB_CODE: &str = r#"
     fn iterative_fib(n: i64) -> (r: i64) {
         if n == 0 {
@@ -126,21 +222,62 @@ const ITERATIVE_FIB_CODE: &str = r#"
         }
     }
 "#;
-// FLOAT_ADD_CODE: 实现一个简单的函数float_add，对输入参数a和b进行浮点数加法操作
+
 const FLOAT_ADD_CODE: &str = r#"
     fn float_add(a: f64, b: f64) -> (c: f64) {
         c = a + b
     }
 "#;
-// MIXED_ADD_CODE: 实现一个简单的函数mixed_add，对输入参数a和b进行混合类型加法操作，先将a转换为f64类型
+
 const MIXED_ADD_CODE: &str = r#"
-    fn mixed_add(a: i32, b: f64) -> (c: f64) {
-        c = (a as f64) + b
+    fn mixed_add(a: i32, b: f64, c: f64) -> (r: f64) {
+        r = (a as f64) + b + c
     }
 "#;
 
 const HELLO_CODE: &str = r#"
 fn hello() -> (r: i64) {
     puts(&hello_string)
+}
+"#;
+
+const MUL_DIV_CODE: &str = r#"
+fn mul_div(a: f64, b: f64) -> (c: f64) {
+    c = a * b / 2.0
+}
+"#;
+
+const CUSTOM_STRING_CODE: &str = r#"
+fn custom_string_func() -> (r: i64) {
+    puts(&custom_msg)
+}
+"#;
+
+const STRING_TEST_CODE: &str = r#"
+fn string_test() -> (r: i64) {
+    s = "Hello from JIT String Literal!\nWith Newline\tAnd Tab"
+    puts(s)
+    fmt = "Printf Test: %s %d\n"
+    world = "World"
+    num = 123
+    printf(fmt, world, num)
+    r = 0
+}
+"#;
+
+const COMPLEX_TEST_CODE: &str = r#"
+    fn complex_test() -> (status: i64) {
+        c1 = 1.5 + 2.5i
+        c2 = 0.5 + 0.5i
+        c = c1 + c2
+        status = 1
+    }
+"#;
+
+const ARRAY_TEST_CODE: &str = r#"
+fn array_test() -> (r: i64) {
+    arr = [10, 20, 30] 
+    x = arr[2]
+    r = x
 }
 "#;

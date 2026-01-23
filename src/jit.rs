@@ -1,6 +1,7 @@
 use crate::frontend::{self, Expr, Type as FrontendType, parser};
 use cranelift::codegen::ir::BlockArg;
 use cranelift::codegen::ir::InstBuilder;
+use cranelift::codegen::ir::{StackSlotData, StackSlotKind};
 use cranelift::prelude::*;
 use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{DataDescription, Linkage, Module};
@@ -37,7 +38,10 @@ impl Default for JIT {
         let isa = isa_builder
             .finish(settings::Flags::new(flag_builder))
             .unwrap();
-        let builder = JITBuilder::with_isa(isa, cranelift_module::default_libcall_names());
+        let mut builder = JITBuilder::with_isa(isa, cranelift_module::default_libcall_names());
+        
+        // Register printf
+        builder.symbol("printf", libc::printf as *const u8);
 
         let module = JITModule::new(builder);
         Self {
@@ -115,11 +119,11 @@ impl JIT {
     ) -> Result<(), String> {
         // 将参数类型添加到函数签名中
         for (_, ty) in &params {
-            self.ctx.func.signature.params.push(AbiParam::new(to_cranelift_type(*ty)));
+            self.ctx.func.signature.params.push(AbiParam::new(to_cranelift_type(ty)));
         }
 
         // 将返回类型添加到函数签名中
-        self.ctx.func.signature.returns.push(AbiParam::new(to_cranelift_type(the_return.1)));
+        self.ctx.func.signature.returns.push(AbiParam::new(to_cranelift_type(&the_return.1)));
 
         // 创建函数构建器并设置入口块
         let mut builder = FunctionBuilder::new(&mut self.ctx.func, &mut self.builder_context);
@@ -145,7 +149,8 @@ impl JIT {
             variables,
             module: &mut self.module,
             current_func_name: name,
-            current_func_ret_type: to_cranelift_type(the_return.1),
+            current_func_ret_type: to_cranelift_type(&the_return.1),
+            string_counter: 0,
         };
 
         // 逐条翻译函数体语句
@@ -154,7 +159,7 @@ impl JIT {
         }
         
         // 读取返回变量的值并生成 return 指令
-        let return_variable = trans.variables.get(&the_return.0).expect("return variable not defined");
+        let (return_variable, _) = trans.variables.get(&the_return.0).expect("return variable not defined");
         let return_value = trans.builder.use_var(*return_variable);
         trans.builder.ins().return_(&[return_value]);
         
@@ -164,7 +169,7 @@ impl JIT {
     }
 }
 
-fn to_cranelift_type(t: FrontendType) -> types::Type {
+fn to_cranelift_type(t: &FrontendType) -> types::Type {
     match t {
         FrontendType::I8 => types::I8,
         FrontendType::I16 => types::I16,
@@ -173,22 +178,35 @@ fn to_cranelift_type(t: FrontendType) -> types::Type {
         FrontendType::I128 => types::I128,
         FrontendType::F32 => types::F32,
         FrontendType::F64 => types::F64,
+        FrontendType::String => types::I64, // Pointer
+        FrontendType::Complex64 => types::I64, // Packed 2xf32
+        FrontendType::Complex128 => types::I128, // Packed 2xf64
+        FrontendType::Array(_, _) => types::I64, // Pointer
     }
+}
+
+fn is_complex(t: &FrontendType) -> bool {
+    matches!(t, FrontendType::Complex64 | FrontendType::Complex128)
+}
+
+enum BinOp {
+    Add, Sub, Mul, Div
 }
 
 struct FunctionTranslator<'a> {
     builder: FunctionBuilder<'a>,    // 函数构建器
-    variables: HashMap<String, Variable>,    // 变量映射表
+    variables: HashMap<String, (Variable, FrontendType)>,    // 变量映射表
     module: &'a mut JITModule,              // JIT模块引用
     current_func_name: String,              // 当前函数名
     current_func_ret_type: types::Type,    // 当前函数返回类型
+    string_counter: usize,
 }
 
 impl<'a> FunctionTranslator<'a> {
     fn translate_expr(&mut self, expr: Expr) -> Value {         //梯度下降翻译
         match expr {
             Expr::Literal(val, ty) => {      //// 翻译字面量
-                let cl_ty: types::Type = to_cranelift_type(ty);
+                let cl_ty: types::Type = to_cranelift_type(&ty);
                 match ty {
                     FrontendType::F32 => self.builder.ins().f32const(val.parse::<f32>().unwrap()),
                     FrontendType::F64 => self.builder.ins().f64const(val.parse::<f64>().unwrap()),
@@ -205,22 +223,50 @@ impl<'a> FunctionTranslator<'a> {
                 }
             }
 
-            Expr::Add(lhs, rhs) => self.translate_binary_op(*lhs, *rhs, |b, l, r| {
-                 let ty = b.func.dfg.value_type(l);
-                 if ty.is_float() { b.ins().fadd(l, r) } else { b.ins().iadd(l, r) }
-            }),
-            Expr::Sub(lhs, rhs) => self.translate_binary_op(*lhs, *rhs, |b, l, r| {
-                 let ty = b.func.dfg.value_type(l);
-                 if ty.is_float() { b.ins().fsub(l, r) } else { b.ins().isub(l, r) }
-            }),
-            Expr::Mul(lhs, rhs) => self.translate_binary_op(*lhs, *rhs, |b, l, r| {
-                 let ty = b.func.dfg.value_type(l);
-                 if ty.is_float() { b.ins().fmul(l, r) } else { b.ins().imul(l, r) }
-            }),
-            Expr::Div(lhs, rhs) => self.translate_binary_op(*lhs, *rhs, |b, l, r| {
-                 let ty = b.func.dfg.value_type(l);
-                 if ty.is_float() { b.ins().fdiv(l, r) } else { b.ins().udiv(l, r) }
-            }),
+            Expr::Add(lhs, rhs) => {
+                let ty = infer_type(&lhs, &self.variables);
+                if is_complex(&ty) {
+                    self.translate_complex_binop(*lhs, *rhs, BinOp::Add)
+                } else {
+                    self.translate_binary_op(*lhs, *rhs, |b, l, r| {
+                        let ty = b.func.dfg.value_type(l);
+                        if ty.is_float() { b.ins().fadd(l, r) } else { b.ins().iadd(l, r) }
+                    })
+                }
+            },
+            Expr::Sub(lhs, rhs) => {
+                let ty = infer_type(&lhs, &self.variables);
+                if is_complex(&ty) {
+                    self.translate_complex_binop(*lhs, *rhs, BinOp::Sub)
+                } else {
+                    self.translate_binary_op(*lhs, *rhs, |b, l, r| {
+                        let ty = b.func.dfg.value_type(l);
+                        if ty.is_float() { b.ins().fsub(l, r) } else { b.ins().isub(l, r) }
+                    })
+                }
+            },
+            Expr::Mul(lhs, rhs) => {
+                let ty = infer_type(&lhs, &self.variables);
+                if is_complex(&ty) {
+                    self.translate_complex_binop(*lhs, *rhs, BinOp::Mul)
+                } else {
+                    self.translate_binary_op(*lhs, *rhs, |b, l, r| {
+                        let ty = b.func.dfg.value_type(l);
+                        if ty.is_float() { b.ins().fmul(l, r) } else { b.ins().imul(l, r) }
+                    })
+                }
+            },
+            Expr::Div(lhs, rhs) => {
+                let ty = infer_type(&lhs, &self.variables);
+                if is_complex(&ty) {
+                    self.translate_complex_binop(*lhs, *rhs, BinOp::Div)
+                } else {
+                    self.translate_binary_op(*lhs, *rhs, |b, l, r| {
+                        let ty = b.func.dfg.value_type(l);
+                        if ty.is_float() { b.ins().fdiv(l, r) } else { b.ins().udiv(l, r) }
+                    })
+                }
+            },
 
             Expr::Eq(lhs, rhs) => self.translate_cmp(*lhs, *rhs, IntCC::Equal, FloatCC::Equal),
             Expr::Ne(lhs, rhs) => self.translate_cmp(*lhs, *rhs, IntCC::NotEqual, FloatCC::NotEqual),
@@ -231,8 +277,12 @@ impl<'a> FunctionTranslator<'a> {
 
             Expr::Call(name, args) => self.translate_call(name, args),
             Expr::GlobalDataAddr(name) => self.translate_global_data_addr(name),
+            Expr::StringLiteral(s) => self.translate_string_literal(s),
+            Expr::ComplexLiteral(re, im, ty) => self.translate_complex_literal(re, im, ty),
+            Expr::ArrayLiteral(elems, ty) => self.translate_array_literal(elems, ty),
+            Expr::Index(base, idx) => self.translate_index(*base, *idx),
             Expr::Identifier(name) => {
-                let variable = self.variables.get(&name).expect("variable not defined");
+                let (variable, _) = self.variables.get(&name).expect("variable not defined");
                 self.builder.use_var(*variable)
             }
             Expr::Assign(name, expr) => self.translate_assign(name, *expr),
@@ -244,7 +294,7 @@ impl<'a> FunctionTranslator<'a> {
             }
             Expr::Cast(expr, target_ty) => {
                 let val = self.translate_expr(*expr);
-                self.translate_cast(val, to_cranelift_type(target_ty))
+                self.translate_cast(val, to_cranelift_type(&target_ty))
             }
         }
     }
@@ -344,9 +394,22 @@ impl<'a> FunctionTranslator<'a> {
     ///变量赋值
     fn translate_assign(&mut self, name: String, expr: Expr) -> Value {
         let new_value = self.translate_expr(expr);
-        let variable = self.variables.get(&name).unwrap();
-        self.builder.def_var(*variable, new_value);
-        new_value
+        let (variable, ty) = {
+            let (v, t) = self.variables.get(&name).unwrap();
+            (*v, t.clone())
+        };
+        
+        let target_ty = to_cranelift_type(&ty);
+        let val_ty = self.builder.func.dfg.value_type(new_value);
+        
+        let final_value = if val_ty != target_ty {
+            self.translate_cast(new_value, target_ty)
+        } else {
+            new_value
+        };
+        
+        self.builder.def_var(variable, final_value);
+        final_value
     }
         
     /// if-else 语句
@@ -443,6 +506,8 @@ impl<'a> FunctionTranslator<'a> {
         // Return type?
         if name == self.current_func_name {
             sig.returns.push(AbiParam::new(self.current_func_ret_type));
+        } else if name == "printf" || name == "puts" {
+             sig.returns.push(AbiParam::new(types::I32));
         } else {
              // Assume I64 for unknown functions
              sig.returns.push(AbiParam::new(types::I64));
@@ -469,6 +534,225 @@ impl<'a> FunctionTranslator<'a> {
         let pointer = self.module.target_config().pointer_type();
         self.builder.ins().symbol_value(pointer, local_id)
     }
+
+    fn translate_string_literal(&mut self, s: String) -> Value {
+        self.string_counter += 1;
+        let name = format!("str_{}_{}", self.current_func_name, self.string_counter);
+        
+        let data_id = self.module.declare_data(
+            &name,
+            Linkage::Local,
+            false,
+            false
+        ).unwrap();
+        
+        let mut data_ctx = DataDescription::new();
+        // Null-terminate the string for printf compatibility
+        let mut bytes = s.as_bytes().to_vec();
+        bytes.push(0);
+        data_ctx.define(bytes.into_boxed_slice());
+        
+        self.module.define_data(data_id, &data_ctx).unwrap();
+        
+        let local_id = self.module.declare_data_in_func(data_id, self.builder.func);
+        let pointer = self.module.target_config().pointer_type();
+        self.builder.ins().symbol_value(pointer, local_id)
+    }
+
+    fn translate_complex_literal(&mut self, re: f64, im: f64, ty: FrontendType) -> Value {
+         match ty {
+             FrontendType::Complex64 => {
+                 let re_bits = (re as f32).to_bits() as u64;
+                 let im_bits = (im as f32).to_bits() as u64;
+                 let val = re_bits | (im_bits << 32);
+                 self.builder.ins().iconst(types::I64, val as i64)
+             },
+             FrontendType::Complex128 => {
+                 let re_bits = re.to_bits();
+                 let im_bits = im.to_bits();
+                 
+                 let ss = self.builder.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 16, 4));
+                  let low = self.builder.ins().iconst(types::I64, re_bits as i64);
+                 let high = self.builder.ins().iconst(types::I64, im_bits as i64);
+                 
+                 self.builder.ins().stack_store(low, ss, 0);
+                 self.builder.ins().stack_store(high, ss, 8);
+                 self.builder.ins().stack_load(types::I128, ss, 0)
+             },
+             _ => panic!("Invalid complex type"),
+         }
+    }
+
+    fn translate_array_literal(&mut self, elems: Vec<Expr>, _ty: FrontendType) -> Value {
+        // Re-infer type because parser uses placeholder
+        let actual_ty = if elems.is_empty() {
+             FrontendType::Array(Box::new(FrontendType::I64), 0)
+        } else {
+             let elem_ty = infer_type(&elems[0], &self.variables);
+             FrontendType::Array(Box::new(elem_ty), elems.len())
+        };
+
+        let (elem_ty, len) = match actual_ty {
+            FrontendType::Array(t, l) => (*t, l),
+            _ => panic!("Expected array type"),
+        };
+        
+        let cl_elem_ty = to_cranelift_type(&elem_ty);
+        let elem_size = cl_elem_ty.bytes();
+        let total_size = elem_size * (len as u32);
+        
+        // Use natural alignment for elements
+        let align_shift = (elem_size as f64).log2().ceil() as u8;
+        
+        let slot = self.builder.create_sized_stack_slot(StackSlotData {
+            kind: StackSlotKind::ExplicitSlot,
+            size: total_size,
+            align_shift,
+        });
+        
+        for (i, elem) in elems.into_iter().enumerate() {
+            let val = self.translate_expr(elem);
+            let offset = (i as i32) * (elem_size as i32);
+            self.builder.ins().stack_store(val, slot, offset);
+        }
+        
+        self.builder.ins().stack_addr(types::I64, slot, 0)
+    }
+
+    fn translate_index(&mut self, base: Expr, idx: Expr) -> Value {
+        let base_ty = infer_type(&base, &self.variables);
+        let (elem_ty, len) = match base_ty {
+            FrontendType::Array(t, l) => (*t, l),
+            FrontendType::String => (FrontendType::I8, 0), // No bounds check for string yet
+            _ => panic!("Cannot index non-array type: {:?}", base_ty),
+        };
+        
+        let base_val = self.translate_expr(base);
+        let idx_val = self.translate_expr(idx);
+        
+        let cl_elem_ty = to_cranelift_type(&elem_ty);
+        let elem_size = cl_elem_ty.bytes() as i64;
+        
+        let idx_val_i64 = if self.builder.func.dfg.value_type(idx_val) != types::I64 {
+             self.builder.ins().uextend(types::I64, idx_val)
+        } else {
+             idx_val
+        };
+        
+        // Bounds checking
+        if len > 0 {
+             let len_val = self.builder.ins().iconst(types::I64, len as i64);
+             // idx < 0 || idx >= len (unsigned check covers both)
+             // if idx >= len, trap.
+             let out_of_bounds = self.builder.ins().icmp(IntCC::UnsignedGreaterThanOrEqual, idx_val_i64, len_val);
+             self.builder.ins().trapnz(out_of_bounds, TrapCode::unwrap_user(1));
+        }
+        
+        let offset = self.builder.ins().imul_imm(idx_val_i64, elem_size);
+        let addr = self.builder.ins().iadd(base_val, offset);
+        
+        self.builder.ins().load(cl_elem_ty, MemFlags::new(), addr, 0)
+    }
+
+    fn translate_complex_binop(&mut self, lhs: Expr, rhs: Expr, op: BinOp) -> Value {
+        let l_val = self.translate_expr(lhs);
+        let r_val = self.translate_expr(rhs);
+        // Assuming types match (infer_type ensures this or we panic/promote).
+        let ty = self.builder.func.dfg.value_type(l_val);
+        
+        if ty == types::I64 { // Complex64
+            // Unpack l
+            let l_re_bits = self.builder.ins().ireduce(types::I32, l_val); // Low 32 bits
+            let l_val_shifted = self.builder.ins().ushr_imm(l_val, 32);
+            let l_im_bits = self.builder.ins().ireduce(types::I32, l_val_shifted);
+            let l_re = self.builder.ins().bitcast(types::F32, MemFlags::new(), l_re_bits);
+            let l_im = self.builder.ins().bitcast(types::F32, MemFlags::new(), l_im_bits);
+            
+            // Unpack r
+            let r_re_bits = self.builder.ins().ireduce(types::I32, r_val);
+            let r_val_shifted = self.builder.ins().ushr_imm(r_val, 32);
+            let r_im_bits = self.builder.ins().ireduce(types::I32, r_val_shifted);
+            let r_re = self.builder.ins().bitcast(types::F32, MemFlags::new(), r_re_bits);
+            let r_im = self.builder.ins().bitcast(types::F32, MemFlags::new(), r_im_bits);
+            
+            let (res_re, res_im) = match op {
+                BinOp::Add => (self.builder.ins().fadd(l_re, r_re), self.builder.ins().fadd(l_im, r_im)),
+                BinOp::Sub => (self.builder.ins().fsub(l_re, r_re), self.builder.ins().fsub(l_im, r_im)),
+                BinOp::Mul => {
+                    let ac = self.builder.ins().fmul(l_re, r_re);
+                    let bd = self.builder.ins().fmul(l_im, r_im);
+                    let ad = self.builder.ins().fmul(l_re, r_im);
+                    let bc = self.builder.ins().fmul(l_im, r_re);
+                    (self.builder.ins().fsub(ac, bd), self.builder.ins().fadd(ad, bc))
+                },
+                BinOp::Div => {
+                    let c2 = self.builder.ins().fmul(r_re, r_re);
+                    let d2 = self.builder.ins().fmul(r_im, r_im);
+                    let denom = self.builder.ins().fadd(c2, d2);
+                    let ac = self.builder.ins().fmul(l_re, r_re);
+                    let bd = self.builder.ins().fmul(l_im, r_im);
+                    let num_re = self.builder.ins().fadd(ac, bd);
+                    let bc = self.builder.ins().fmul(l_im, r_re);
+                    let ad = self.builder.ins().fmul(l_re, r_im);
+                    let num_im = self.builder.ins().fsub(bc, ad);
+                    (self.builder.ins().fdiv(num_re, denom), self.builder.ins().fdiv(num_im, denom))
+                }
+            };
+            
+            // Repack
+            let res_re_bits = self.builder.ins().bitcast(types::I32, MemFlags::new(), res_re);
+            let res_im_bits = self.builder.ins().bitcast(types::I32, MemFlags::new(), res_im);
+            
+            let res_re_i64 = self.builder.ins().uextend(types::I64, res_re_bits);
+            let res_im_i64 = self.builder.ins().uextend(types::I64, res_im_bits);
+            let res_im_shifted = self.builder.ins().ishl_imm(res_im_i64, 32);
+            self.builder.ins().bor(res_re_i64, res_im_shifted)
+            
+        } else if ty == types::I128 { // Complex128
+            let ss = self.builder.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 16, 4));
+
+            // Unpack l_val
+            self.builder.ins().stack_store(l_val, ss, 0);
+            let l_re = self.builder.ins().stack_load(types::F64, ss, 0);
+            let l_im = self.builder.ins().stack_load(types::F64, ss, 8);
+            
+            // Unpack r_val
+            self.builder.ins().stack_store(r_val, ss, 0);
+            let r_re = self.builder.ins().stack_load(types::F64, ss, 0);
+            let r_im = self.builder.ins().stack_load(types::F64, ss, 8);
+            
+            let (res_re, res_im) = match op {
+                BinOp::Add => (self.builder.ins().fadd(l_re, r_re), self.builder.ins().fadd(l_im, r_im)),
+                BinOp::Sub => (self.builder.ins().fsub(l_re, r_re), self.builder.ins().fsub(l_im, r_im)),
+                BinOp::Mul => {
+                    let ac = self.builder.ins().fmul(l_re, r_re);
+                    let bd = self.builder.ins().fmul(l_im, r_im);
+                    let ad = self.builder.ins().fmul(l_re, r_im);
+                    let bc = self.builder.ins().fmul(l_im, r_re);
+                    (self.builder.ins().fsub(ac, bd), self.builder.ins().fadd(ad, bc))
+                },
+                BinOp::Div => {
+                    let c2 = self.builder.ins().fmul(r_re, r_re);
+                    let d2 = self.builder.ins().fmul(r_im, r_im);
+                    let denom = self.builder.ins().fadd(c2, d2);
+                    let ac = self.builder.ins().fmul(l_re, r_re);
+                    let bd = self.builder.ins().fmul(l_im, r_im);
+                    let num_re = self.builder.ins().fadd(ac, bd);
+                    let bc = self.builder.ins().fmul(l_im, r_re);
+                    let ad = self.builder.ins().fmul(l_re, r_im);
+                    let num_im = self.builder.ins().fsub(bc, ad);
+                    (self.builder.ins().fdiv(num_re, denom), self.builder.ins().fdiv(num_im, denom))
+                }
+            };
+            
+            // Repack
+            self.builder.ins().stack_store(res_re, ss, 0);
+            self.builder.ins().stack_store(res_im, ss, 8);
+            self.builder.ins().stack_load(types::I128, ss, 0)
+        } else {
+            panic!("Unsupported complex type IR: {:?}", ty);
+        }
+    }
 }
 
 /// 在 JIT 编译开始前 扫描并声明所有变量
@@ -478,24 +762,24 @@ fn declare_variables(
     stmts: &[Expr],
     entry_block: Block,
     return_info: &(String, FrontendType),
-) -> HashMap<String, Variable> {
+) -> HashMap<String, (Variable, FrontendType)> {
     let mut variables = HashMap::new();
     
     // - 注册 ：为每个函数参数创建一个 Cranelift 变量（ declare_var ）。
     // - 绑定 ：把函数的 入口参数值 （ block_params ）赋给这个变量（ def_var ）。
     for (i, (name, ty)) in params.iter().enumerate() {
         let val = builder.block_params(entry_block)[i];
-        let var = builder.declare_var(to_cranelift_type(*ty));
-        variables.insert(name.clone(), var);
+        let var = builder.declare_var(to_cranelift_type(ty));
+        variables.insert(name.clone(), (var, ty.clone()));
         builder.def_var(var, val);
     }
     
     /// 声明返回值变量
     let (ret_name, ret_ty) = return_info;
     if !variables.contains_key(ret_name) {
-        let cl_ty = to_cranelift_type(*ret_ty);
+        let cl_ty = to_cranelift_type(ret_ty);
         let var = builder.declare_var(cl_ty);
-        variables.insert(ret_name.clone(), var);
+        variables.insert(ret_name.clone(), (var, ret_ty.clone()));
         
         // Initialize return var to 0 or equivalent
         let zero = match ret_ty {
@@ -517,7 +801,7 @@ fn declare_variables(
 /// 递归扫描表达式中的变量声明
 fn declare_variables_in_stmt(
     builder: &mut FunctionBuilder,
-    variables: &mut HashMap<String, Variable>,
+    variables: &mut HashMap<String, (Variable, FrontendType)>,
     expr: &Expr,
 ) {
     match *expr {
@@ -525,8 +809,8 @@ fn declare_variables_in_stmt(
             if !variables.contains_key(name) {
                 // Infer type
                 let ty = infer_type(val_expr, variables); // We need inferred type!
-                let var = builder.declare_var(to_cranelift_type(ty));
-                variables.insert(name.clone(), var);
+                let var = builder.declare_var(to_cranelift_type(&ty));
+                variables.insert(name.clone(), (var, ty));
             }
         }
         Expr::IfElse(ref _condition, ref then_body, ref else_body) => {
@@ -547,21 +831,35 @@ fn declare_variables_in_stmt(
 }
 
 /// 递归推断表达式的类型
-fn infer_type(expr: &Expr, variables: &HashMap<String, Variable>) -> FrontendType {
+fn infer_type(expr: &Expr, variables: &HashMap<String, (Variable, FrontendType)>) -> FrontendType {
     // Simple inference. 
-    // Limitation: if we use a variable declared later, we fail.
-    // Also we don't know the type of `variables` entries here (Variable doesn't store type).
-    // So this is imperfect. Ideally we need a symbol table with types.
-    // For this demo, let's assume default I64 if unknown or recurse.
     match expr {
-        Expr::Literal(_, ty) => *ty,
-        Expr::Cast(_, ty) => *ty,
+        Expr::Literal(_, ty) => ty.clone(),
+        Expr::StringLiteral(_) => FrontendType::String,
+        Expr::ComplexLiteral(_, _, ty) => ty.clone(),
+        Expr::ArrayLiteral(elems, _) => {
+            if elems.is_empty() {
+                 FrontendType::Array(Box::new(FrontendType::I64), 0) // Default empty array
+            } else {
+                 let elem_ty = infer_type(&elems[0], variables);
+                 FrontendType::Array(Box::new(elem_ty), elems.len())
+            }
+        },
+        Expr::Cast(_, ty) => ty.clone(),
         Expr::Add(lhs, _) => infer_type(lhs, variables), // Assume lhs type dominates
         Expr::Sub(lhs, _) => infer_type(lhs, variables),
         Expr::Mul(lhs, _) => infer_type(lhs, variables),
         Expr::Div(lhs, _) => infer_type(lhs, variables),
-        Expr::Identifier(_) => FrontendType::I64, // Fallback, we can't easily know without tracking types in variables map
+        Expr::Identifier(name) => {
+             variables.get(name).map(|(_, ty)| ty.clone()).unwrap_or(FrontendType::I64)
+        },
         Expr::Call(_, _) => FrontendType::I64, // Fallback
+        Expr::Index(base, _) => {
+             match infer_type(base, variables) {
+                 FrontendType::Array(inner, _) => *inner,
+                 _ => FrontendType::I64, // Fallback
+             }
+        },
         _ => FrontendType::I64,
     }
 }
