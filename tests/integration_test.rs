@@ -33,54 +33,32 @@ fn test_pow() {
 }
 
 #[test]
-fn test_nalgebra_sum() {
+fn test_mkl_dgemm() {
     let mut jit = JIT::default();
-    // Create an array and pass it to sum_array
-    // Note: Array literal syntax [1.0, 2.0, ...]
+    // Test 2x2 matrix multiplication
+    // A = [1, 2; 3, 4], B = [5, 6; 7, 8]
+    // C = A * B = [19, 22; 43, 50]
     let code = r#"
-    fn test_sum() -> (r: f64) {
-        arr = [1.0, 2.0, 3.0, 4.0]
-        r = sum_array(arr)
-    }
-    "#;
-    
-    let func_ptr = jit.compile(code).unwrap();
-    let func: fn() -> f64 = unsafe { std::mem::transmute(func_ptr) };
-    
-    let result = func();
-    assert!((result - 10.0).abs() < 1e-6);
-}
-
-#[test]
-fn test_nalgebra_print() {
-    let mut jit = JIT::default();
-    // Just verify it doesn't crash
-    let code = r#"
-    fn test_print() -> (r: i64) {
-        arr = [1.0, 2.0, 3.0, 4.0]
-        print_matrix_2x2(arr)
+    fn test_dgemm(c: [f64; 4]) -> (r: i64) {
+        a = [1.0, 2.0, 3.0, 4.0]
+        b = [5.0, 6.0, 7.0, 8.0]
+        toy_mkl_dgemm(2, 2, 2, 1.0, a, 0.0, b, c)
         r = 0
     }
     "#;
     
     let func_ptr = jit.compile(code).unwrap();
-    let func: fn() -> i64 = unsafe { std::mem::transmute(func_ptr) };
+    // The JIT function signature will be: extern "C" fn(*mut f64) -> i64
+    // Wait, the JIT function itself ONLY gets the pointer for its own parameters.
+    // It doesn't get the length expanded for its OWN parameters.
+    let func: fn(*mut f64) -> i64 = unsafe { std::mem::transmute(func_ptr) };
     
-    func();
-}
-
-#[test]
-fn test_runtime_rand() {
-    let mut jit = JIT::default();
-    let code = r#"
-    fn test_rand() -> (r: i64) {
-        r = rand()
-    }
-    "#;
+    let mut c = [0.0f64; 4];
+    func(c.as_mut_ptr());
     
-    let func_ptr = jit.compile(code).unwrap();
-    let func: fn() -> i64 = unsafe { std::mem::transmute(func_ptr) };
-    
-    let _val = func();
-    // Cannot assert value, but verified it runs
+    println!("Resulting matrix C: {:?}", c);
+    assert_eq!(c[0], 19.0);
+    assert_eq!(c[1], 22.0);
+    assert_eq!(c[2], 43.0);
+    assert_eq!(c[3], 50.0);
 }

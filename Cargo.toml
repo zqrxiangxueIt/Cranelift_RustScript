@@ -14,8 +14,8 @@ cranelift-module = "0.125.3"
 cranelift-jit = "0.125.3"
 cranelift-native = "0.125.3"
 libc = "0.2.180"
-nalgebra = "0.34.1"
 rand = "0.9.2"
+intel-mkl-src = { version = "0.8.1", features = ["mkl-static-lp64-seq"] }
 
 [dev-dependencies]
 criterion = "0.8.1"

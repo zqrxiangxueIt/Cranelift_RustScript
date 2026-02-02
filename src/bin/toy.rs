@@ -51,7 +51,37 @@ fn main() -> Result<(), String> {
     println!("--- Running Array Test ---");
     run_array_test(&mut jit)?;
 
+    println!("--- Running MKL DGEMM Test ---");
+    run_mkl_test(&mut jit)?;
+
     Ok(())
+}
+
+fn run_mkl_test(jit: &mut jit::JIT) -> Result<(), String> {
+    let code = r#"
+    fn test_mkl(c: [f64; 4]) -> (r: i64) {
+        a = [1.0, 2.0, 3.0, 4.0]
+        b = [5.0, 6.0, 7.0, 8.0]
+        toy_mkl_dgemm(2, 2, 2, 1.0, a, 0.0, b, c)
+        r = 0
+    }
+    "#;
+    
+    unsafe {
+        let code_ptr = jit.compile(code)?;
+        let func: extern "C" fn(*mut f64) -> i64 = mem::transmute(code_ptr);
+        
+        let mut c = [0.0f64; 4];
+        func(c.as_mut_ptr());
+        
+        println!("MKL DGEMM Result Matrix C: {:?}", c);
+        if c[0] == 19.0 && c[1] == 22.0 && c[2] == 43.0 && c[3] == 50.0 {
+            println!("MKL DGEMM Test Passed!");
+            Ok(())
+        } else {
+            Err(format!("MKL DGEMM Test Failed: expected [19, 22, 43, 50], got {:?}", c))
+        }
+    }
 }
 
 fn run_i128_test(jit: &mut jit::JIT) -> Result<i64, String> {

@@ -1,5 +1,5 @@
-use crate::frontend::{self, Expr, Type as FrontendType, parser};
-use crate::type_checker::{self, TypeChecker, FunctionSignature};
+use crate::frontend::{Expr, Type as FrontendType, parser};
+use crate::type_checker::{self, TypeChecker};
 use crate::runtime::extern_functions;
 use cranelift::codegen::ir::BlockArg;
 use cranelift::codegen::ir::InstBuilder;
@@ -64,9 +64,9 @@ impl Default for JIT {
         builder.symbol("putchar", extern_functions::toy_putchar as *const u8);
         builder.symbol("rand", extern_functions::toy_rand as *const u8);
 
-        // Register Nalgebra wrappers
-        builder.symbol("sum_array", extern_functions::toy_sum_array as *const u8);
-        builder.symbol("print_matrix_2x2", extern_functions::toy_print_matrix_2x2 as *const u8);
+        // Register MKL functions
+        builder.symbol("cblas_dgemm", extern_functions::cblas_dgemm as *const u8);
+        builder.symbol("toy_mkl_dgemm", extern_functions::toy_mkl_dgemm as *const u8);
 
         let module = JITModule::new(builder);
         Self {

@@ -50,22 +50,26 @@ impl TypeChecker {
             ret: Type::I64,
             is_external: true,
         });
-        
-        // External functions for nalgebra demo
-        // sum_array: fn(arr: [f64; N]) -> f64
-        // We use a special placeholder or just allow it in validation logic
-        self.functions.insert("sum_array".to_string(), FunctionSignature {
-            // We'll allow any array of F64 in logic, but here we might need a way to express it.
-            // For now, assume it's unchecked here or checked dynamically
-            params: vec![], // Empty params as wildcard? Or strict? 
-            // Let's rely on name-based checking for arrays for now since Type system is limited
-            ret: Type::F64,
-            is_external: true,
-        });
 
-        self.functions.insert("print_matrix_2x2".to_string(), FunctionSignature {
-            params: vec![], // Wildcard
-            ret: Type::I64, // Void-ish (returns 0 or something)
+        // Register toy_mkl_dgemm
+        // fn toy_mkl_dgemm(
+        //     m: i64, n: i64, k: i64,
+        //     alpha: f64, a: [f64],
+        //     beta: f64, b: [f64],
+        //     c: [f64]
+        // ) -> void
+        // Note: Arrays in JIT are passed as (ptr, len), so we need to match that expectation
+        // or ensure the caller passes arrays which will be expanded.
+        // The toy language expands arrays to (ptr, len) automatically for external calls.
+        // So signature here should use Array type if we want that expansion logic to trigger.
+        self.functions.insert("toy_mkl_dgemm".to_string(), FunctionSignature {
+            params: vec![
+                Type::I64, Type::I64, Type::I64, // m, n, k
+                Type::F64, Type::Array(Box::new(Type::F64), 0), // alpha, a (size ignored)
+                Type::F64, Type::Array(Box::new(Type::F64), 0), // beta, b
+                Type::Array(Box::new(Type::F64), 0) // c
+            ],
+            ret: Type::I64, // void
             is_external: true,
         });
     }
