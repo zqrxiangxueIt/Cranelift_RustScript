@@ -1,4 +1,6 @@
 use crate::frontend::{self, Expr, Type as FrontendType, parser};
+use crate::type_checker::{self, TypeChecker, FunctionSignature};
+use crate::runtime::extern_functions;
 use cranelift::codegen::ir::BlockArg;
 use cranelift::codegen::ir::InstBuilder;
 use cranelift::codegen::ir::{StackSlotData, StackSlotKind};
@@ -25,6 +27,9 @@ pub struct JIT {
     /// The module, with the jit backend, which manages the JIT'd
     /// functions.
     module: JITModule,
+
+    /// Type checker and function signature registry
+    type_checker: TypeChecker,
 }
 
 impl Default for JIT {
@@ -42,6 +47,26 @@ impl Default for JIT {
         
         // Register printf
         builder.symbol("printf", libc::printf as *const u8);
+        builder.symbol("puts", libc::puts as *const u8); // In case we use puts
+
+        // Register Math functions
+        builder.symbol("sin", extern_functions::toy_sin as *const u8);
+        builder.symbol("cos", extern_functions::toy_cos as *const u8);
+        builder.symbol("tan", extern_functions::toy_tan as *const u8);
+        builder.symbol("sqrt", extern_functions::toy_sqrt as *const u8);
+        builder.symbol("pow", extern_functions::toy_pow as *const u8);
+        builder.symbol("exp", extern_functions::toy_exp as *const u8);
+        builder.symbol("log", extern_functions::toy_log as *const u8);
+        builder.symbol("ceil", extern_functions::toy_ceil as *const u8);
+        builder.symbol("floor", extern_functions::toy_floor as *const u8);
+
+        // Register Runtime functions
+        builder.symbol("putchar", extern_functions::toy_putchar as *const u8);
+        builder.symbol("rand", extern_functions::toy_rand as *const u8);
+
+        // Register Nalgebra wrappers
+        builder.symbol("sum_array", extern_functions::toy_sum_array as *const u8);
+        builder.symbol("print_matrix_2x2", extern_functions::toy_print_matrix_2x2 as *const u8);
 
         let module = JITModule::new(builder);
         Self {
@@ -49,6 +74,7 @@ impl Default for JIT {
             ctx: module.make_context(),
             data_description: DataDescription::new(),
             module,
+            type_checker: TypeChecker::new(),
         }
     }
 }
@@ -151,6 +177,7 @@ impl JIT {
             current_func_name: name,
             current_func_ret_type: to_cranelift_type(&the_return.1),
             string_counter: 0,
+            type_checker: &self.type_checker,
         };
 
         // 逐条翻译函数体语句
@@ -200,6 +227,7 @@ struct FunctionTranslator<'a> {
     current_func_name: String,              // 当前函数名
     current_func_ret_type: types::Type,    // 当前函数返回类型
     string_counter: usize,
+    type_checker: &'a TypeChecker,
 }
 
 impl<'a> FunctionTranslator<'a> {
@@ -224,7 +252,7 @@ impl<'a> FunctionTranslator<'a> {
             }
 
             Expr::Add(lhs, rhs) => {
-                let ty = infer_type(&lhs, &self.variables);
+                let ty = type_checker::infer_type(&lhs, &|n| self.variables.get(n).map(|(_, t)| t.clone()));
                 if is_complex(&ty) {
                     self.translate_complex_binop(*lhs, *rhs, BinOp::Add)
                 } else {
@@ -235,7 +263,7 @@ impl<'a> FunctionTranslator<'a> {
                 }
             },
             Expr::Sub(lhs, rhs) => {
-                let ty = infer_type(&lhs, &self.variables);
+                let ty = type_checker::infer_type(&lhs, &|n| self.variables.get(n).map(|(_, t)| t.clone()));
                 if is_complex(&ty) {
                     self.translate_complex_binop(*lhs, *rhs, BinOp::Sub)
                 } else {
@@ -246,7 +274,7 @@ impl<'a> FunctionTranslator<'a> {
                 }
             },
             Expr::Mul(lhs, rhs) => {
-                let ty = infer_type(&lhs, &self.variables);
+                let ty = type_checker::infer_type(&lhs, &|n| self.variables.get(n).map(|(_, t)| t.clone()));
                 if is_complex(&ty) {
                     self.translate_complex_binop(*lhs, *rhs, BinOp::Mul)
                 } else {
@@ -257,7 +285,7 @@ impl<'a> FunctionTranslator<'a> {
                 }
             },
             Expr::Div(lhs, rhs) => {
-                let ty = infer_type(&lhs, &self.variables);
+                let ty = type_checker::infer_type(&lhs, &|n| self.variables.get(n).map(|(_, t)| t.clone()));
                 if is_complex(&ty) {
                     self.translate_complex_binop(*lhs, *rhs, BinOp::Div)
                 } else {
@@ -496,22 +524,48 @@ impl<'a> FunctionTranslator<'a> {
     fn translate_call(&mut self, name: String, args: Vec<Expr>) -> Value {
         let mut sig = self.module.make_signature();
         
+        let signature = self.type_checker.resolve_func(&name);
+
         let mut arg_values = Vec::new();
         for arg in args {
+            // Infer type to check if it's an array
+            let arg_ty = type_checker::infer_type(&arg, &|n| self.variables.get(n).map(|(_, t)| t.clone()));
+            
             let val = self.translate_expr(arg);
-            arg_values.push(val);
-            sig.params.push(AbiParam::new(self.builder.func.dfg.value_type(val)));
+            
+            let should_expand = if let FrontendType::Array(_, _) = arg_ty {
+                 // Expand array to (ptr, len) only for external functions
+                 signature.map(|s| s.is_external).unwrap_or(false)
+            } else {
+                 false
+            };
+
+            if should_expand {
+                 arg_values.push(val);
+                 sig.params.push(AbiParam::new(self.builder.func.dfg.value_type(val)));
+                 
+                 let len = if let FrontendType::Array(_, l) = arg_ty { l } else { 0 };
+                 let len_val = self.builder.ins().iconst(types::I64, len as i64);
+                 arg_values.push(len_val);
+                 sig.params.push(AbiParam::new(types::I64));
+            } else {
+                arg_values.push(val);
+                sig.params.push(AbiParam::new(self.builder.func.dfg.value_type(val)));
+            }
         }
 
         // Return type?
-        if name == self.current_func_name {
-            sig.returns.push(AbiParam::new(self.current_func_ret_type));
+        let ret_ty = if let Some(s) = signature {
+            to_cranelift_type(&s.ret)
+        } else if name == self.current_func_name {
+             self.current_func_ret_type
         } else if name == "printf" || name == "puts" {
-             sig.returns.push(AbiParam::new(types::I32));
+             types::I32
         } else {
              // Assume I64 for unknown functions
-             sig.returns.push(AbiParam::new(types::I64));
-        }
+             types::I64
+        };
+        sig.returns.push(AbiParam::new(ret_ty));
 
         let callee = self
             .module
@@ -588,7 +642,7 @@ impl<'a> FunctionTranslator<'a> {
         let actual_ty = if elems.is_empty() {
              FrontendType::Array(Box::new(FrontendType::I64), 0)
         } else {
-             let elem_ty = infer_type(&elems[0], &self.variables);
+             let elem_ty = type_checker::infer_type(&elems[0], &|n| self.variables.get(n).map(|(_, t)| t.clone()));
              FrontendType::Array(Box::new(elem_ty), elems.len())
         };
 
@@ -620,7 +674,7 @@ impl<'a> FunctionTranslator<'a> {
     }
 
     fn translate_index(&mut self, base: Expr, idx: Expr) -> Value {
-        let base_ty = infer_type(&base, &self.variables);
+        let base_ty = type_checker::infer_type(&base, &|n| self.variables.get(n).map(|(_, t)| t.clone()));
         let (elem_ty, len) = match base_ty {
             FrontendType::Array(t, l) => (*t, l),
             FrontendType::String => (FrontendType::I8, 0), // No bounds check for string yet
@@ -808,7 +862,7 @@ fn declare_variables_in_stmt(
         Expr::Assign(ref name, ref val_expr) => {
             if !variables.contains_key(name) {
                 // Infer type
-                let ty = infer_type(val_expr, variables); // We need inferred type!
+                let ty = type_checker::infer_type(val_expr, &|n| variables.get(n).map(|(_, t)| t.clone()));
                 let var = builder.declare_var(to_cranelift_type(&ty));
                 variables.insert(name.clone(), (var, ty));
             }
@@ -827,39 +881,5 @@ fn declare_variables_in_stmt(
             }
         }
         _ => (),
-    }
-}
-
-/// 递归推断表达式的类型
-fn infer_type(expr: &Expr, variables: &HashMap<String, (Variable, FrontendType)>) -> FrontendType {
-    // Simple inference. 
-    match expr {
-        Expr::Literal(_, ty) => ty.clone(),
-        Expr::StringLiteral(_) => FrontendType::String,
-        Expr::ComplexLiteral(_, _, ty) => ty.clone(),
-        Expr::ArrayLiteral(elems, _) => {
-            if elems.is_empty() {
-                 FrontendType::Array(Box::new(FrontendType::I64), 0) // Default empty array
-            } else {
-                 let elem_ty = infer_type(&elems[0], variables);
-                 FrontendType::Array(Box::new(elem_ty), elems.len())
-            }
-        },
-        Expr::Cast(_, ty) => ty.clone(),
-        Expr::Add(lhs, _) => infer_type(lhs, variables), // Assume lhs type dominates
-        Expr::Sub(lhs, _) => infer_type(lhs, variables),
-        Expr::Mul(lhs, _) => infer_type(lhs, variables),
-        Expr::Div(lhs, _) => infer_type(lhs, variables),
-        Expr::Identifier(name) => {
-             variables.get(name).map(|(_, ty)| ty.clone()).unwrap_or(FrontendType::I64)
-        },
-        Expr::Call(_, _) => FrontendType::I64, // Fallback
-        Expr::Index(base, _) => {
-             match infer_type(base, variables) {
-                 FrontendType::Array(inner, _) => *inner,
-                 _ => FrontendType::I64, // Fallback
-             }
-        },
-        _ => FrontendType::I64,
     }
 }
