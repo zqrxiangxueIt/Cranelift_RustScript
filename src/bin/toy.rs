@@ -1,61 +1,94 @@
-use core::mem;
+use anyhow::{Context, Result, anyhow};
 use cranelift_jit_demo::jit;
+use cranelift_jit_demo::cli::Cli;
+use std::fs;
+use std::mem;
+use std::path::Path;
 
-fn main() -> Result<(), String> {
-    // Program main function, implementing toy language execution
-    let mut jit = jit::JIT::default();
-    
-    println!("foo(1, 0) = {}", run_foo(&mut jit)?);
-    
-    println!(
-        "recursive_fib(10) = {}",
-        run_recursive_fib(&mut jit, 10)?
-    );
-    
-    println!(
-        "iterative_fib(10) = {}",
-        run_iterative_fib(&mut jit, 10)?
-    );
-    
-    println!(
-        "float_add(1.5, 2.5) = {}", 
-        run_float_add(&mut jit, 1.5, 2.5)?
-    );
-    
-    println!(
-        "mixed_add(10, 2.5) = {}", 
-        run_mixed_add(&mut jit, 10, 2.5, 2.5)?
-    );
-    
-    run_hello(&mut jit)?;
+fn main() -> Result<()> {
+    let cli = Cli::parse_args();
 
-
-    println!(
-        "mul_div(10.0, 5.0) = {}",
-        run_mul_div(&mut jit, 10.0, 5.0)?
-    );
-
-    run_custom_string(&mut jit, "Customize String Test Success!")?;
-    
-    // --- New Tests ---
-    
-    println!("--- Running String Literal Test ---");
-    run_string_test(&mut jit)?;
-
-    println!("--- Running I128 Test ---");
-    run_i128_test(&mut jit)?;
-
-    println!("--- Running Complex Test ---");
-    run_complex_test(&mut jit)?;
-    
-    println!("--- Running Array Test ---");
-    run_array_test(&mut jit)?;
-
-    println!("--- Running MKL DGEMM Test ---");
-    run_mkl_test(&mut jit)?;
+    if cli.test {
+        println!("Running integration tests...");
+        run_all_tests().context("Integration tests failed")?;
+        println!("All tests passed!");
+    } else if let Some(file_path) = cli.file {
+        run_script(&file_path).with_context(|| format!("Failed to run script: {:?}", file_path))?;
+    } else {
+        use clap::CommandFactory;
+        Cli::command().print_help()?;
+        println!();
+    }
 
     Ok(())
 }
+
+fn run_script(path: &Path) -> Result<()> {
+    // 1. Verify file existence and extension
+    if !path.exists() {
+        return Err(anyhow!("File not found: {:?}", path));
+    }
+    if path.extension().and_then(|s| s.to_str()) != Some("toy") {
+        return Err(anyhow!("File must have .toy extension: {:?}", path));
+    }
+
+    // 2. Read source code
+    let source = fs::read_to_string(path)
+        .with_context(|| format!("Failed to read file: {:?}", path))?;
+
+    // 3. JIT Compile
+    let mut jit = jit::JIT::default();
+    let code_ptr = jit.compile(&source)
+        .map_err(|e| anyhow!("Compilation error: {}", e))?;
+
+    // 4. Execute (assuming no arguments for now, or main)
+    // The current toy language JIT.compile returns the entry point of the function defined in the script.
+    unsafe {
+        let func = mem::transmute::<_, extern "C" fn() -> i64>(code_ptr);
+        let result = func();
+        println!("Return value: {}", result);
+    }
+
+    Ok(())
+}
+
+fn run_all_tests() -> Result<()> {
+    let mut jit = jit::JIT::default();
+
+    println!("foo(1, 0) = {}", run_foo(&mut jit).map_err(|e| anyhow!(e))?);
+    println!("recursive_fib(10) = {}", run_recursive_fib(&mut jit, 10).map_err(|e| anyhow!(e))?);
+    println!("iterative_fib(10) = {}", run_iterative_fib(&mut jit, 10).map_err(|e| anyhow!(e))?);
+    println!("float_add(1.5, 2.5) = {}", run_float_add(&mut jit, 1.5, 2.5).map_err(|e| anyhow!(e))?);
+    println!("mixed_add(10, 2.5) = {}", run_mixed_add(&mut jit, 10, 2.5, 2.5).map_err(|e| anyhow!(e))?);
+    
+    run_hello(&mut jit).map_err(|e| anyhow!(e))?;
+    
+    println!("mul_div(10.0, 5.0) = {}", run_mul_div(&mut jit, 10.0, 5.0).map_err(|e| anyhow!(e))?);
+    
+    run_custom_string(&mut jit, "Customize String Test Success!").map_err(|e| anyhow!(e))?;
+    
+    println!("--- Running String Literal Test ---");
+    run_string_test(&mut jit).map_err(|e| anyhow!(e))?;
+
+    println!("--- Running I128 Test ---");
+    run_i128_test(&mut jit).map_err(|e| anyhow!(e))?;
+
+    println!("--- Running Complex Test ---");
+    run_complex_test(&mut jit).map_err(|e| anyhow!(e))?;
+    
+    println!("--- Running Array Test ---");
+    run_array_test(&mut jit).map_err(|e| anyhow!(e))?;
+
+    #[cfg(feature = "mkl")]
+    {
+        println!("--- Running MKL DGEMM Test ---");
+        run_mkl_test(&mut jit).map_err(|e| anyhow!(e))?;
+    }
+
+    Ok(())
+}
+
+// --- Test helper functions (migrated from original toy.rs) ---
 
 fn run_mkl_test(jit: &mut jit::JIT) -> Result<(), String> {
     let code = r#"
@@ -178,17 +211,10 @@ fn run_string_test(jit: &mut jit::JIT) -> Result<i64, String> {
 fn run_complex_test(jit: &mut jit::JIT) -> Result<i64, String> {
     unsafe {
         let code_ptr = jit.compile(COMPLEX_TEST_CODE)?;
-        // Returns status (i64)
         let code_fn = mem::transmute::<_, extern "C" fn() -> i64>(code_ptr);
         let result = code_fn();
-        
         println!("Complex Test Status: {}", result);
-        
-        if result == 1 {
-             Ok(result)
-        } else {
-             Err(format!("Complex test failed"))
-        }
+        if result == 1 { Ok(result) } else { Err(format!("Complex test failed")) }
     }
 }
 
@@ -198,11 +224,7 @@ fn run_array_test(jit: &mut jit::JIT) -> Result<i64, String> {
         let code_fn = mem::transmute::<_, extern "C" fn() -> i64>(code_ptr);
         let result = code_fn();
         println!("Array test result: {}", result);
-        if result == 30 {
-            Ok(result)
-        } else {
-            Err(format!("Array test failed: expected 30, got {}", result))
-        }
+        if result == 30 { Ok(result) } else { Err(format!("Array test failed: expected 30, got {}", result)) }
     }
 }
 

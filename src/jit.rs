@@ -1,6 +1,6 @@
 use crate::frontend::{Expr, Type as FrontendType, parser};
 use crate::type_checker::{self, TypeChecker};
-use crate::runtime::extern_functions;
+use crate::runtime;
 use cranelift::codegen::ir::BlockArg;
 use cranelift::codegen::ir::InstBuilder;
 use cranelift::codegen::ir::{StackSlotData, StackSlotKind};
@@ -45,28 +45,8 @@ impl Default for JIT {
             .unwrap();
         let mut builder = JITBuilder::with_isa(isa, cranelift_module::default_libcall_names());
         
-        // Register printf
-        builder.symbol("printf", libc::printf as *const u8);
-        builder.symbol("puts", libc::puts as *const u8); // In case we use puts
-
-        // Register Math functions
-        builder.symbol("sin", extern_functions::toy_sin as *const u8);
-        builder.symbol("cos", extern_functions::toy_cos as *const u8);
-        builder.symbol("tan", extern_functions::toy_tan as *const u8);
-        builder.symbol("sqrt", extern_functions::toy_sqrt as *const u8);
-        builder.symbol("pow", extern_functions::toy_pow as *const u8);
-        builder.symbol("exp", extern_functions::toy_exp as *const u8);
-        builder.symbol("log", extern_functions::toy_log as *const u8);
-        builder.symbol("ceil", extern_functions::toy_ceil as *const u8);
-        builder.symbol("floor", extern_functions::toy_floor as *const u8);
-
-        // Register Runtime functions
-        builder.symbol("putchar", extern_functions::toy_putchar as *const u8);
-        builder.symbol("rand", extern_functions::toy_rand as *const u8);
-
-        // Register MKL functions
-        builder.symbol("cblas_dgemm", extern_functions::cblas_dgemm as *const u8);
-        builder.symbol("toy_mkl_dgemm", extern_functions::toy_mkl_dgemm as *const u8);
+        // Register built-in functions via modularized registry
+        runtime::register_builtins(&mut builder);
 
         let module = JITModule::new(builder);
         Self {
