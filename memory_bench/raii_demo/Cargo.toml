@@ -1,0 +1,28 @@
+[package]
+name = "raii_demo"
+version = "0.1.0"
+edition = "2021"
+authors = ["Trae Assistant"]
+description = "A memory-safe dynamic array implementation based on RAII principles."
+
+[dependencies]
+
+[dev-dependencies]
+criterion = "0.5"
+rand = "0.8"
+crossbeam = "0.8"
+
+[[bench]]
+name = "bench_vec"
+harness = false
+
+[profile.dev]
+overflow-checks = true
+
+[profile.release]
+lto = true
+opt-level = 3
+
+[lib]
+name = "raii_demo"
+path = "src/lib.rs"

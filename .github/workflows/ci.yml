@@ -1,0 +1,53 @@
+name: RAII Demo CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test:
+    name: Test & Verify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+          
+      - name: Install Nightly for Miri
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: miri
+          
+      - name: Install Valgrind
+        run: sudo apt-get update && sudo apt-get install -y valgrind
+        
+      - name: Check Formatting
+        run: cargo fmt --all -- --check
+        working-directory: memory_bench/raii_demo
+        
+      - name: Run Tests
+        run: cargo test --verbose
+        working-directory: memory_bench/raii_demo
+        
+      - name: Run Miri Tests
+        run: cargo +nightly miri test
+        working-directory: memory_bench/raii_demo
+        
+      - name: Run Valgrind
+        run: |
+          chmod +x valgrind_test.sh
+          ./valgrind_test.sh
+        working-directory: memory_bench/raii_demo
+        
+      - name: Check Doc
+        run: cargo doc --no-deps
+        working-directory: memory_bench/raii_demo
+        
+      - name: Dry Run Publish
+        run: cargo publish --dry-run
+        working-directory: memory_bench/raii_demo
