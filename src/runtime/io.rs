@@ -19,3 +19,15 @@ pub unsafe extern "C" fn toy_sum_array(ptr: *const f64, len: usize) -> f64 {
     let slice = unsafe { slice::from_raw_parts(ptr, len) };
     slice.iter().sum()
 }
+
+#[unsafe(no_mangle)]
+pub extern "C" fn toy_print_f64(n: f64) -> f64 {
+    println!("{}", n);
+    n
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn toy_print_i64(n: i64) -> i64 {
+    println!("{}", n);
+    n
+}

@@ -10,25 +10,25 @@ use cranelift_module::{DataDescription, Linkage, Module};
 use std::collections::HashMap;
 use std::slice;
 
-/// The basic JIT class.
+/// 基础 JIT 类。
 pub struct JIT {
-    /// The function builder context, which is reused across multiple
-    /// FunctionBuilder instances.
+    /// 函数构建器上下文，在多个
+    /// FunctionBuilder 实例之间重用。
     builder_context: FunctionBuilderContext,
 
-    /// The main Cranelift context, which holds the state for codegen. Cranelift
-    /// separates this from `Module` to allow for parallel compilation, with a
-    /// context per thread, though this isn't in the simple demo here.
+    /// 主要的 Cranelift 上下文，保存代码生成的状态。Cranelift
+    /// 将其与 `Module` 分离以允许并行编译，
+    /// 每个线程一个上下文，尽管在这个简单的演示中没有体现。
     ctx: codegen::Context,
 
-    /// The data description, which is to data objects what `ctx` is to functions.
+    /// 数据描述，对于数据对象的作用相当于 `ctx` 对于函数的作用。
     data_description: DataDescription,
 
-    /// The module, with the jit backend, which manages the JIT'd
-    /// functions.
+    /// 包含 JIT 后端的模块，用于管理 JIT 编译后的
+    /// 函数。
     module: JITModule,
 
-    /// Type checker and function signature registry
+    /// 类型检查器和函数签名注册表
     type_checker: TypeChecker,
 }
 
@@ -45,7 +45,7 @@ impl Default for JIT {
             .unwrap();
         let mut builder = JITBuilder::with_isa(isa, cranelift_module::default_libcall_names());
         
-        // Register built-in functions via modularized registry
+        // 通过模块化注册表注册内置函数
         runtime::register_builtins(&mut builder);
 
         let module = JITModule::new(builder);
@@ -158,6 +158,7 @@ impl JIT {
             current_func_ret_type: to_cranelift_type(&the_return.1),
             string_counter: 0,
             type_checker: &self.type_checker,
+            dynamic_arrays: Vec::new(),
         };
 
         // 逐条翻译函数体语句
@@ -166,8 +167,24 @@ impl JIT {
         }
         
         // 读取返回变量的值并生成 return 指令
-        let (return_variable, _) = trans.variables.get(&the_return.0).expect("return variable not defined");
+        let (return_variable, _return_ty) = trans.variables.get(&the_return.0).expect("return variable not defined");
         let return_value = trans.builder.use_var(*return_variable);
+
+        // 释放未返回的动态数组
+        let mut drop_sig = trans.module.make_signature();
+        drop_sig.params.push(AbiParam::new(types::I64));
+        drop_sig.returns.push(AbiParam::new(types::I64)); // return 0
+        let drop_callee = trans.module.declare_function("array_drop", Linkage::Import, &drop_sig).unwrap();
+        let drop_local_callee = trans.module.declare_func_in_func(drop_callee, trans.builder.func);
+
+        let dynamic_arrays = trans.dynamic_arrays.clone();
+        for var in dynamic_arrays {
+            if var != *return_variable {
+                let val = trans.builder.use_var(var);
+                trans.builder.ins().call(drop_local_callee, &[val]);
+            }
+        }
+
         trans.builder.ins().return_(&[return_value]);
         
         // 完成函数构建
@@ -185,10 +202,11 @@ fn to_cranelift_type(t: &FrontendType) -> types::Type {
         FrontendType::I128 => types::I128,
         FrontendType::F32 => types::F32,
         FrontendType::F64 => types::F64,
-        FrontendType::String => types::I64, // Pointer
-        FrontendType::Complex64 => types::I64, // Packed 2xf32
-        FrontendType::Complex128 => types::I128, // Packed 2xf64
-        FrontendType::Array(_, _) => types::I64, // Pointer
+        FrontendType::String => types::I64, // 指针
+        FrontendType::Complex64 => types::I64, // 打包的 2xf32
+        FrontendType::Complex128 => types::I128, // 打包的 2xf64
+        FrontendType::Array(_, _) => types::I64, // 指针
+        FrontendType::DynamicArray(_) => types::I64, // 指向 DynamicArray 结构体的指针
     }
 }
 
@@ -208,6 +226,7 @@ struct FunctionTranslator<'a> {
     current_func_ret_type: types::Type,    // 当前函数返回类型
     string_counter: usize,
     type_checker: &'a TypeChecker,
+    dynamic_arrays: Vec<Variable>,
 }
 
 impl<'a> FunctionTranslator<'a> {
@@ -221,8 +240,8 @@ impl<'a> FunctionTranslator<'a> {
                     _ => {
                          let int_val = val.parse::<i128>().unwrap();
                          if cl_ty == types::I128 {
-                             // Treat i128 literals as i64 for now as iconst supports Imm64. 
-                             // Real i128 support would require constructing the value from two i64s.
+                             // 暂时将 i128 字面量视为 i64，因为 iconst 支持 Imm64。
+                             // 真正的 i128 支持需要从两个 i64 构建值。
                              InstBuilder::iconst(self.builder.ins(), cl_ty, int_val as i64) 
                          } else {
                              InstBuilder::iconst(self.builder.ins(), cl_ty, int_val as i64)
@@ -288,6 +307,7 @@ impl<'a> FunctionTranslator<'a> {
             Expr::StringLiteral(s) => self.translate_string_literal(s),
             Expr::ComplexLiteral(re, im, ty) => self.translate_complex_literal(re, im, ty),
             Expr::ArrayLiteral(elems, ty) => self.translate_array_literal(elems, ty),
+            Expr::DynamicArrayLiteral(elems, ty) => self.translate_dynamic_array_literal(elems, ty),
             Expr::Index(base, idx) => self.translate_index(*base, *idx),
             Expr::Identifier(name) => {
                 let (variable, _) = self.variables.get(&name).expect("variable not defined");
@@ -309,11 +329,11 @@ impl<'a> FunctionTranslator<'a> {
     
     fn translate_binary_op<F>(&mut self, lhs: Expr, rhs: Expr, op: F) -> Value 
     where F: Fn(&mut FunctionBuilder, Value, Value) -> Value {
-        let l_val = self.translate_expr(lhs);    /// 先把左边的表达式翻译完，拿到结果线头
-        let r_val = self.translate_expr(rhs);    /// 再把右边的表达式翻译完，拿到结果线头
+        let l_val = self.translate_expr(lhs);    // 先把左边的表达式翻译完，拿到结果线头
+        let r_val = self.translate_expr(rhs);    // 再把右边的表达式翻译完，拿到结果线头
         let (l_promoted, r_promoted) = self.promote_operands(l_val, r_val);
         //如果左边是 i32，右边是 i64，要把左边“拉长”成 i64
-        op(&mut self.builder, l_promoted, r_promoted)  //// 生成真正的加法指令
+        op(&mut self.builder, l_promoted, r_promoted)  // 生成真正的加法指令
     }   
     
     fn promote_operands(&mut self, lhs: Value, rhs: Value) -> (Value, Value) {
@@ -324,8 +344,8 @@ impl<'a> FunctionTranslator<'a> {
             return (lhs, rhs);
         }
         
-        // Implicit promotion: int -> wider int, float -> wider float.
-        // No implicit int <-> float.
+        // 隐式提升：int -> 更宽的 int，float -> 更宽的 float。
+        // 没有隐式的 int <-> float 转换。
         
         if l_ty.is_int() && r_ty.is_int() {
              if l_ty.bits() < r_ty.bits() {
@@ -394,7 +414,7 @@ impl<'a> FunctionTranslator<'a> {
         } else {
             self.builder.ins().icmp(int_cc, l, r)
         };
-        // Use select instead of bint if bint is missing
+        // 如果缺少 bint，则使用 select 代替
         let one = InstBuilder::iconst(self.builder.ins(), types::I64, 1);
         let zero = InstBuilder::iconst(self.builder.ins(), types::I64, 0);
         self.builder.ins().select(bool_res, one, zero)
@@ -417,6 +437,13 @@ impl<'a> FunctionTranslator<'a> {
         };
         
         self.builder.def_var(variable, final_value);
+
+        if matches!(ty, FrontendType::DynamicArray(_)) {
+            if !self.dynamic_arrays.contains(&variable) {
+                self.dynamic_arrays.push(variable);
+            }
+        }
+
         final_value
     }
         
@@ -439,7 +466,7 @@ impl<'a> FunctionTranslator<'a> {
 
         self.builder.switch_to_block(then_block);
         self.builder.seal_block(then_block);
-        let mut then_return = InstBuilder::iconst(self.builder.ins(), types::I64, 0); // Default
+        let mut then_return = InstBuilder::iconst(self.builder.ins(), types::I64, 0); // 默认值
         for expr in then_body {
             then_return = self.translate_expr(expr);
         }
@@ -454,11 +481,11 @@ impl<'a> FunctionTranslator<'a> {
             else_return = self.translate_expr(expr);
         }
         
-        // Explicitly cast else result to match then result type (simple unification)
+        // 显式转换 else 结果以匹配 then 结果类型（简单统一）
         let else_return_cast = if then_ty != self.builder.func.dfg.value_type(else_return) {
-             // For simplicity, we just use else_return and hope for the best or rely on validation error.
-             // Implementing proper cast here requires access to self.translate_cast which takes &mut self.
-             // We can call it!
+             // 为简单起见，我们直接使用 else_return，希望一切顺利或依赖验证错误。
+             // 在此处实现正确的转换需要访问 self.translate_cast，这需要 &mut self。
+             // 我们可以调用它！
              self.translate_cast(else_return, then_ty)
         } else {
              else_return
@@ -508,18 +535,20 @@ impl<'a> FunctionTranslator<'a> {
 
         let mut arg_values = Vec::new();
         for arg in args {
-            // Infer type to check if it's an array
+            // 推断类型以检查它是否为数组
             let arg_ty = type_checker::infer_type(&arg, &|n| self.variables.get(n).map(|(_, t)| t.clone()));
             
             let val = self.translate_expr(arg);
             
             let should_expand = if let FrontendType::Array(_, _) = arg_ty {
-                 // Expand array to (ptr, len) only for external functions
+                 // 仅对外部函数将数组展开为 (ptr, len)
                  signature.map(|s| s.is_external).unwrap_or(false)
             } else {
                  false
             };
 
+            // DynamicArray 作为单个指针传递，不需要展开。
+            
             if should_expand {
                  arg_values.push(val);
                  sig.params.push(AbiParam::new(self.builder.func.dfg.value_type(val)));
@@ -534,7 +563,7 @@ impl<'a> FunctionTranslator<'a> {
             }
         }
 
-        // Return type?
+        // 返回类型？
         let ret_ty = if let Some(s) = signature {
             to_cranelift_type(&s.ret)
         } else if name == self.current_func_name {
@@ -542,7 +571,7 @@ impl<'a> FunctionTranslator<'a> {
         } else if name == "printf" || name == "puts" {
              types::I32
         } else {
-             // Assume I64 for unknown functions
+             // 对于未知函数，假设为 I64
              types::I64
         };
         sig.returns.push(AbiParam::new(ret_ty));
@@ -581,7 +610,7 @@ impl<'a> FunctionTranslator<'a> {
         ).unwrap();
         
         let mut data_ctx = DataDescription::new();
-        // Null-terminate the string for printf compatibility
+        // 以 Null 结尾的字符串，以兼容 printf
         let mut bytes = s.as_bytes().to_vec();
         bytes.push(0);
         data_ctx.define(bytes.into_boxed_slice());
@@ -618,7 +647,7 @@ impl<'a> FunctionTranslator<'a> {
     }
 
     fn translate_array_literal(&mut self, elems: Vec<Expr>, _ty: FrontendType) -> Value {
-        // Re-infer type because parser uses placeholder
+        // 重新推断类型，因为解析器使用占位符
         let actual_ty = if elems.is_empty() {
              FrontendType::Array(Box::new(FrontendType::I64), 0)
         } else {
@@ -635,7 +664,7 @@ impl<'a> FunctionTranslator<'a> {
         let elem_size = cl_elem_ty.bytes();
         let total_size = elem_size * (len as u32);
         
-        // Use natural alignment for elements
+        // 对元素使用自然对齐
         let align_shift = (elem_size as f64).log2().ceil() as u8;
         
         let slot = self.builder.create_sized_stack_slot(StackSlotData {
@@ -653,11 +682,43 @@ impl<'a> FunctionTranslator<'a> {
         self.builder.ins().stack_addr(types::I64, slot, 0)
     }
 
+    fn translate_dynamic_array_literal(&mut self, elems: Vec<Expr>, _ty: FrontendType) -> Value {
+        // 目前我们只支持 i64 动态数组
+        let mut sig = self.module.make_signature();
+        sig.returns.push(AbiParam::new(types::I64));
+        
+        let callee = self.module.declare_function("array_new_i64", Linkage::Import, &sig).unwrap();
+        let local_callee = self.module.declare_func_in_func(callee, self.builder.func);
+        let call = self.builder.ins().call(local_callee, &[]);
+        let arr_ptr = self.builder.inst_results(call)[0];
+        
+        // 推送元素
+        if !elems.is_empty() {
+            let mut push_sig = self.module.make_signature();
+            push_sig.params.push(AbiParam::new(types::I64)); // arr_ptr
+            push_sig.params.push(AbiParam::new(types::I64)); // elem
+            push_sig.returns.push(AbiParam::new(types::I64)); // return 0
+            
+            let push_callee = self.module.declare_function("array_push", Linkage::Import, &push_sig).unwrap();
+            let push_local_callee = self.module.declare_func_in_func(push_callee, self.builder.func);
+            
+            for elem in elems {
+                let val = self.translate_expr(elem);
+                // 如果需要，提升/转换为 I64
+                let val_i64 = self.translate_cast(val, types::I64);
+                self.builder.ins().call(push_local_callee, &[arr_ptr, val_i64]);
+            }
+        }
+        
+        arr_ptr
+    }
+
     fn translate_index(&mut self, base: Expr, idx: Expr) -> Value {
         let base_ty = type_checker::infer_type(&base, &|n| self.variables.get(n).map(|(_, t)| t.clone()));
-        let (elem_ty, len) = match base_ty {
-            FrontendType::Array(t, l) => (*t, l),
-            FrontendType::String => (FrontendType::I8, 0), // No bounds check for string yet
+        let (elem_ty, len, is_dynamic) = match base_ty {
+            FrontendType::Array(t, l) => (*t, l, false),
+            FrontendType::DynamicArray(t) => (*t, 0, true),
+            FrontendType::String => (FrontendType::I8, 0, false), // 字符串暂无边界检查
             _ => panic!("Cannot index non-array type: {:?}", base_ty),
         };
         
@@ -665,7 +726,6 @@ impl<'a> FunctionTranslator<'a> {
         let idx_val = self.translate_expr(idx);
         
         let cl_elem_ty = to_cranelift_type(&elem_ty);
-        let elem_size = cl_elem_ty.bytes() as i64;
         
         let idx_val_i64 = if self.builder.func.dfg.value_type(idx_val) != types::I64 {
              self.builder.ins().uextend(types::I64, idx_val)
@@ -673,36 +733,55 @@ impl<'a> FunctionTranslator<'a> {
              idx_val
         };
         
-        // Bounds checking
-        if len > 0 {
-             let len_val = self.builder.ins().iconst(types::I64, len as i64);
-             // idx < 0 || idx >= len (unsigned check covers both)
-             // if idx >= len, trap.
-             let out_of_bounds = self.builder.ins().icmp(IntCC::UnsignedGreaterThanOrEqual, idx_val_i64, len_val);
-             self.builder.ins().trapnz(out_of_bounds, TrapCode::unwrap_user(1));
+        if is_dynamic {
+             // 对于动态数组，我们需要调用 array_get_ptr
+             let mut sig = self.module.make_signature();
+             sig.params.push(AbiParam::new(types::I64)); // arr_ptr
+             sig.params.push(AbiParam::new(types::I64)); // index
+             sig.returns.push(AbiParam::new(types::I64)); // 元素指针
+             
+             let callee = self.module.declare_function("array_get_ptr", Linkage::Import, &sig).unwrap();
+             let local_callee = self.module.declare_func_in_func(callee, self.builder.func);
+             let call = self.builder.ins().call(local_callee, &[base_val, idx_val_i64]);
+             let addr = self.builder.inst_results(call)[0];
+             
+             // 如果 addr 为空（索引越界），则触发陷阱
+             self.builder.ins().trapz(addr, TrapCode::unwrap_user(1));
+             
+             self.builder.ins().load(cl_elem_ty, MemFlags::new(), addr, 0)
+        } else {
+            let elem_size = cl_elem_ty.bytes() as i64;
+            // 边界检查
+            if len > 0 {
+                 let len_val = self.builder.ins().iconst(types::I64, len as i64);
+                 // idx < 0 || idx >= len (无符号检查覆盖两者)
+                 // 如果 idx >= len，触发陷阱。
+                 let out_of_bounds = self.builder.ins().icmp(IntCC::UnsignedGreaterThanOrEqual, idx_val_i64, len_val);
+                 self.builder.ins().trapnz(out_of_bounds, TrapCode::unwrap_user(1));
+            }
+            
+            let offset = self.builder.ins().imul_imm(idx_val_i64, elem_size);
+            let addr = self.builder.ins().iadd(base_val, offset);
+            
+            self.builder.ins().load(cl_elem_ty, MemFlags::new(), addr, 0)
         }
-        
-        let offset = self.builder.ins().imul_imm(idx_val_i64, elem_size);
-        let addr = self.builder.ins().iadd(base_val, offset);
-        
-        self.builder.ins().load(cl_elem_ty, MemFlags::new(), addr, 0)
     }
 
     fn translate_complex_binop(&mut self, lhs: Expr, rhs: Expr, op: BinOp) -> Value {
         let l_val = self.translate_expr(lhs);
         let r_val = self.translate_expr(rhs);
-        // Assuming types match (infer_type ensures this or we panic/promote).
+        // 假设类型匹配（infer_type 确保这一点，否则我们会 panic 或提升）。
         let ty = self.builder.func.dfg.value_type(l_val);
         
         if ty == types::I64 { // Complex64
-            // Unpack l
-            let l_re_bits = self.builder.ins().ireduce(types::I32, l_val); // Low 32 bits
+            // 解包 l
+            let l_re_bits = self.builder.ins().ireduce(types::I32, l_val); // 低 32 位
             let l_val_shifted = self.builder.ins().ushr_imm(l_val, 32);
             let l_im_bits = self.builder.ins().ireduce(types::I32, l_val_shifted);
             let l_re = self.builder.ins().bitcast(types::F32, MemFlags::new(), l_re_bits);
             let l_im = self.builder.ins().bitcast(types::F32, MemFlags::new(), l_im_bits);
             
-            // Unpack r
+            // 解包 r
             let r_re_bits = self.builder.ins().ireduce(types::I32, r_val);
             let r_val_shifted = self.builder.ins().ushr_imm(r_val, 32);
             let r_im_bits = self.builder.ins().ireduce(types::I32, r_val_shifted);
@@ -733,7 +812,7 @@ impl<'a> FunctionTranslator<'a> {
                 }
             };
             
-            // Repack
+            // 重新打包
             let res_re_bits = self.builder.ins().bitcast(types::I32, MemFlags::new(), res_re);
             let res_im_bits = self.builder.ins().bitcast(types::I32, MemFlags::new(), res_im);
             
@@ -745,12 +824,12 @@ impl<'a> FunctionTranslator<'a> {
         } else if ty == types::I128 { // Complex128
             let ss = self.builder.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 16, 4));
 
-            // Unpack l_val
+            // 解包 l_val
             self.builder.ins().stack_store(l_val, ss, 0);
             let l_re = self.builder.ins().stack_load(types::F64, ss, 0);
             let l_im = self.builder.ins().stack_load(types::F64, ss, 8);
             
-            // Unpack r_val
+            // 解包 r_val
             self.builder.ins().stack_store(r_val, ss, 0);
             let r_re = self.builder.ins().stack_load(types::F64, ss, 0);
             let r_im = self.builder.ins().stack_load(types::F64, ss, 8);
@@ -779,12 +858,12 @@ impl<'a> FunctionTranslator<'a> {
                 }
             };
             
-            // Repack
+            // 重新打包
             self.builder.ins().stack_store(res_re, ss, 0);
             self.builder.ins().stack_store(res_im, ss, 8);
             self.builder.ins().stack_load(types::I128, ss, 0)
         } else {
-            panic!("Unsupported complex type IR: {:?}", ty);
+            panic!("不支持的复数类型 IR: {:?}", ty);
         }
     }
 }
@@ -806,16 +885,20 @@ fn declare_variables(
         let var = builder.declare_var(to_cranelift_type(ty));
         variables.insert(name.clone(), (var, ty.clone()));
         builder.def_var(var, val);
+        
+        // 跟踪作为参数传递的动态数组（调用者拥有它们？通常调用者拥有，但在 Toy 中，如果是最后一个拥有者，我们可能希望被调用者丢弃。
+        // 为简单起见，我们假设被调用者不丢弃参数，只丢弃局部变量。
+        // 实际上，如果我们想要 RAII，我们应该决定所有权。
     }
     
-    /// 声明返回值变量
+    // 声明返回值变量
     let (ret_name, ret_ty) = return_info;
     if !variables.contains_key(ret_name) {
         let cl_ty = to_cranelift_type(ret_ty);
         let var = builder.declare_var(cl_ty);
         variables.insert(ret_name.clone(), (var, ret_ty.clone()));
         
-        // Initialize return var to 0 or equivalent
+        // 将返回变量初始化为 0 或等效值
         let zero = match ret_ty {
             FrontendType::F32 => builder.ins().f32const(0.0),
             FrontendType::F64 => builder.ins().f64const(0.0),
@@ -824,7 +907,7 @@ fn declare_variables(
         builder.def_var(var, zero);
     }
     
-    /// 扫描语句中的隐式变量
+    // 扫描语句中的隐式变量
     for expr in stmts {
         declare_variables_in_stmt(builder, &mut variables, expr);
     }
@@ -841,7 +924,7 @@ fn declare_variables_in_stmt(
     match *expr {
         Expr::Assign(ref name, ref val_expr) => {
             if !variables.contains_key(name) {
-                // Infer type
+                // 推断类型
                 let ty = type_checker::infer_type(val_expr, &|n| variables.get(n).map(|(_, t)| t.clone()));
                 let var = builder.declare_var(to_cranelift_type(&ty));
                 variables.insert(name.clone(), (var, ty));

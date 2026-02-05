@@ -1,5 +1,5 @@
 use cranelift_jit::JITBuilder;
-use crate::runtime::{io, math, string};
+use crate::runtime::{io, math, string, array};
 
 #[cfg(feature = "mkl")]
 use crate::runtime::mkl;
@@ -21,6 +21,18 @@ pub fn register_builtins(builder: &mut JITBuilder) {
     builder.symbol("putchar", io::toy_putchar as *const u8);
     builder.symbol("rand", io::toy_rand as *const u8);
     builder.symbol("toy_sum_array", io::toy_sum_array as *const u8);
+    builder.symbol("print_f64", io::toy_print_f64 as *const u8);
+    builder.symbol("print_i64", io::toy_print_i64 as *const u8);
+
+    // DynamicArray symbols
+    builder.symbol("array_new_i64", array::dynamic_array_new_i64 as *const u8);
+    builder.symbol("array_push", array::dynamic_array_push_i64 as *const u8);
+    builder.symbol("array_pop", array::dynamic_array_pop_i64 as *const u8);
+    builder.symbol("array_len", array::dynamic_array_len_i64 as *const u8);
+    builder.symbol("array_cap", array::dynamic_array_cap_i64 as *const u8);
+    builder.symbol("array_get_ptr", array::dynamic_array_get_ptr_i64 as *const u8);
+    builder.symbol("array_set", array::array_set as *const u8);
+    builder.symbol("array_drop", array::dynamic_array_drop_i64 as *const u8);
 
     // Register math functions
     builder.symbol("sin", math::toy_sin as *const u8);

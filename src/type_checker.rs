@@ -51,6 +51,51 @@ impl TypeChecker {
             is_external: true,
         });
 
+        self.functions.insert("toy_sum_array".to_string(), FunctionSignature {
+            params: vec![Type::Array(Box::new(Type::F64), 0)],
+            ret: Type::F64,
+            is_external: true,
+        });
+
+        self.functions.insert("print_f64".to_string(), FunctionSignature {
+            params: vec![Type::F64],
+            ret: Type::F64,
+            is_external: true,
+        });
+
+        self.functions.insert("print_i64".to_string(), FunctionSignature {
+            params: vec![Type::I64],
+            ret: Type::I64,
+            is_external: true,
+        });
+
+        // DynamicArray methods
+        self.functions.insert("array_push".to_string(), FunctionSignature {
+            params: vec![Type::DynamicArray(Box::new(Type::I64)), Type::I64],
+            ret: Type::I64,
+            is_external: true,
+        });
+        self.functions.insert("array_pop".to_string(), FunctionSignature {
+            params: vec![Type::DynamicArray(Box::new(Type::I64))],
+            ret: Type::I64,
+            is_external: true,
+        });
+        self.functions.insert("array_len".to_string(), FunctionSignature {
+            params: vec![Type::DynamicArray(Box::new(Type::I64))],
+            ret: Type::I64,
+            is_external: true,
+        });
+        self.functions.insert("array_cap".to_string(), FunctionSignature {
+            params: vec![Type::DynamicArray(Box::new(Type::I64))],
+            ret: Type::I64,
+            is_external: true,
+        });
+        self.functions.insert("array_set".to_string(), FunctionSignature {
+            params: vec![Type::DynamicArray(Box::new(Type::I64)), Type::I64, Type::I64],
+            ret: Type::I64,
+            is_external: true,
+        });
+
         // Register toy_mkl_dgemm
         // fn toy_mkl_dgemm(
         //     m: i64, n: i64, k: i64,
@@ -94,6 +139,14 @@ pub fn infer_type(expr: &Expr, get_var_type: &impl Fn(&str) -> Option<Type>) -> 
                  Type::Array(Box::new(elem_ty), elems.len())
             }
         },
+        Expr::DynamicArrayLiteral(elems, _) => {
+            if elems.is_empty() {
+                 Type::DynamicArray(Box::new(Type::I64))
+            } else {
+                 let elem_ty = infer_type(&elems[0], get_var_type);
+                 Type::DynamicArray(Box::new(elem_ty))
+            }
+        },
         Expr::Cast(_, ty) => ty.clone(),
         Expr::Add(lhs, _) | Expr::Sub(lhs, _) | Expr::Mul(lhs, _) | Expr::Div(lhs, _) => {
             infer_type(lhs, get_var_type)
@@ -104,13 +157,17 @@ pub fn infer_type(expr: &Expr, get_var_type: &impl Fn(&str) -> Option<Type>) -> 
         Expr::Identifier(name) => {
              get_var_type(name).unwrap_or(Type::I64)
         },
-        Expr::Call(_, _) => {
-            // Fallback, ideally we look up function signature
-            Type::I64 
+        Expr::Call(name, _) => {
+            if name == "array_len" || name == "array_cap" || name == "array_pop" || name == "array_push" {
+                Type::I64
+            } else {
+                Type::I64
+            }
         },
         Expr::Index(base, _) => {
              match infer_type(base, get_var_type) {
                  Type::Array(inner, _) => *inner,
+                 Type::DynamicArray(inner) => *inner,
                  _ => Type::I64,
              }
         },

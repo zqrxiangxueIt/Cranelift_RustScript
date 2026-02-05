@@ -5,6 +5,7 @@ pub enum Expr {
     StringLiteral(String),
     ComplexLiteral(f64, f64, Type), // Real, Imag, Type (Complex64 or Complex128)
     ArrayLiteral(Vec<Expr>, Type),
+    DynamicArrayLiteral(Vec<Expr>, Type),
     Identifier(String),
     Assign(String, Box<Expr>),
     Eq(Box<Expr>, Box<Expr>),
@@ -38,6 +39,7 @@ pub enum Type {
     Complex64,
     Complex128,
     Array(Box<Type>, usize), // Fixed size array for now
+    DynamicArray(Box<Type>),
 }
 
 peg::parser!(pub grammar parser() for str {
@@ -85,15 +87,16 @@ peg::parser!(pub grammar parser() for str {
     //statement()*会不断调用 statement() 规则，直到无法匹配为止
     //匹配到的所有结果会自动收集成一个 Vec （向量/列表）
     rule statements() -> Vec<Expr>
-        = s:(statement()*) { s }
+        = s:(statement()*) { s.into_iter().flatten().collect() }
     //statement() ：单条语句的定义
     //e:expression() _ ：调用更底层的 expression() 规则来解析实际的逻辑（比如 a + b 或 c = 1 ）
         //前后允许有空白字符 _
         //结果存入变量 e
     //"\n"明确规定：每一条语句后面 必须 跟一个换行符
     //{ e } ：解析成功后，把表达式 e 返回
-    rule statement() -> Expr
-        = _ e:expression() _ "\n" { e }
+    rule statement() -> Option<Expr>
+        = _ e:expression() _ "\n" { Some(e) }
+        / _ "\n" { None }
 
     //expression() ：表达式的定义
     //if_else() / while_loop() / assignment() / binary_op() ：
@@ -168,6 +171,7 @@ peg::parser!(pub grammar parser() for str {
         / "string" { Type::String }
         / "complex64" { Type::Complex64 }
         / "complex128" { Type::Complex128 }
+        / "array" _ "<" _ t:type_name() _ ">" { Type::DynamicArray(Box::new(t)) }
         / "[" _ t:type_name() _ ";" _ len:$(['0'..='9']+) _ "]" { 
             Type::Array(Box::new(t), len.parse().unwrap()) 
         }
@@ -175,12 +179,19 @@ peg::parser!(pub grammar parser() for str {
     //$ 符号 ：这是 PEG 的操作符，意思是“捕获匹配到的原始字符串”。如果不加 $ ，匹配成功了但你拿不到具体的文本内容
     //返回值 ：把捕获到的切片转成 String 返回
     rule identifier() -> String
-        = quiet!{ n:$(['a'..='z' | 'A'..='Z' | '_']['a'..='z' | 'A'..='Z' | '0'..='9' | '_']*) { n.to_owned() } }
+        = quiet!{ 
+            n:$(!(keyword() !['a'..='z' | 'A'..='Z' | '0'..='9' | '_']) ['a'..='z' | 'A'..='Z' | '_']['a'..='z' | 'A'..='Z' | '0'..='9' | '_']*) 
+            { n.to_owned() } 
+        }
         / expected!("identifier")
+
+    rule keyword()
+        = "fn" / "if" / "else" / "while" / "as" / "array" / "i8" / "i16" / "i32" / "i64" / "i128" / "f32" / "f64" / "string" / "complex64" / "complex128"
 
     rule literal() -> Expr
         = s:string_literal() { Expr::StringLiteral(s) }
         / c:complex_literal() { c }
+        / a:dynamic_array_literal() { a }
         / a:array_literal() { a }
         / n:$(['0'..='9']+ "." ['0'..='9']+) { Expr::Literal(n.to_owned(), Type::F64) }
         / n:$(['0'..='9']+) { Expr::Literal(n.to_owned(), Type::I64) }
@@ -189,6 +200,11 @@ peg::parser!(pub grammar parser() for str {
     rule array_literal() -> Expr
         = "[" _ elems:((_ e:expression() _ {e}) ** ",") _ "]" {
             Expr::ArrayLiteral(elems, Type::I64) // Placeholder type, inferred in JIT
+        }
+
+    rule dynamic_array_literal() -> Expr
+        = "array" _ "[" _ elems:((_ e:expression() _ {e}) ** ",") _ "]" {
+            Expr::DynamicArrayLiteral(elems, Type::I64) // Placeholder type, inferred in JIT
         }
 
     rule string_literal() -> String

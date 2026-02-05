@@ -1,0 +1,12 @@
+fn main() -> (r: i64) {
+    arr = array [10, 20, 30]
+    
+    x = arr[0]
+    y = arr[1]
+    z = arr[2]
+    
+    len = array_len(arr)
+    printf("Array basic test: length is %d\n", len)
+    
+    r = len
+}

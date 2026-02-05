@@ -1,0 +1,37 @@
+commit 79ab48f568b4cc8ef585e943006969684a139cb8
+Author: zqrxiangxueIt <zqr2868221661@protonmail.com>
+Date:   Tue Feb 3 22:49:27 2026 +0800
+
+    feat(memory): 新增基于RAII的动态数组实现及内存管理示例
+    
+    - 实现内存安全的 DynamicArray<T>，支持自动资源管理与零成本抽象
+    - 添加完整的测试套件，包括单元测试、性能基准测试和并发测试
+    - 提供使用示例，展示基本用法、异常安全性和跨线程传输
+    - 集成 CI/CD 工作流，包含 Miri 和 Valgrind 内存安全检查
+    - 创建 sample_app 演示项目展示集成方式
+    - 添加详细的技术文档和集成指南
+
+ .github/workflows/ci.yml                           |  53 ++++
+ CHANGELOG_AND_INTEGRATION.md                       | 245 ++++++++++++++++
+ Cargo.toml                                         |   1 +
+ RUST_RAII_MEMORY_DESIGN.md                         | 101 +++++++
+ build.bat                                          |  12 +
+ check.log                                          | Bin 202 -> 0 bytes
+ memory_bench/Cargo.toml                            |  19 ++
+ memory_bench/README.md                             | 114 ++++++++
+ memory_bench/benches/bench_mimalloc.rs             |  24 ++
+ memory_bench/benches/bench_system.rs               |  20 ++
+ memory_bench/raii_demo/Cargo.toml                  |  28 ++
+ memory_bench/raii_demo/benches/bench_vec.rs        |  58 ++++
+ memory_bench/raii_demo/examples/basic.rs           |  20 ++
+ memory_bench/raii_demo/examples/concurrency.rs     |  22 ++
+ .../raii_demo/examples/exception_safety.rs         |  29 ++
+ memory_bench/raii_demo/miri_test.sh                |   6 +
+ memory_bench/raii_demo/src/lib.rs                  | 321 +++++++++++++++++++++
+ memory_bench/raii_demo/src/tests/mod.rs            | 144 +++++++++
+ memory_bench/raii_demo/valgrind_test.sh            |  17 ++
+ memory_bench/src/lib.rs                            |  28 ++
+ sample_app/Cargo.toml                              |   7 +
+ sample_app/src/main.rs                             |  29 ++
+ src/lib.rs                                         |   2 +
+ 23 files changed, 1300 insertions(+)

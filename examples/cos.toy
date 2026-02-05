@@ -1,0 +1,5 @@
+fn main() -> (r: f64) {
+    val = 0.0
+    r = cos(val)
+    print_f64(r)
+}

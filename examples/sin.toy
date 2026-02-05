@@ -1,0 +1,5 @@
+fn main() -> (r: f64) {
+    val = 1.57079632679
+    r = sin(val)
+    print_f64(r)
+}

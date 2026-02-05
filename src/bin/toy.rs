@@ -79,6 +79,9 @@ fn run_all_tests() -> Result<()> {
     println!("--- Running Array Test ---");
     run_array_test(&mut jit).map_err(|e| anyhow!(e))?;
 
+    println!("--- Running Dynamic Array Test ---");
+    run_dynamic_array_test(&mut jit).map_err(|e| anyhow!(e))?;
+
     #[cfg(feature = "mkl")]
     {
         println!("--- Running MKL DGEMM Test ---");
@@ -228,6 +231,16 @@ fn run_array_test(jit: &mut jit::JIT) -> Result<i64, String> {
     }
 }
 
+fn run_dynamic_array_test(jit: &mut jit::JIT) -> Result<i64, String> {
+     unsafe {
+        let code_ptr = jit.compile(DYNAMIC_ARRAY_TEST_CODE)?;
+        let code_fn = mem::transmute::<_, extern "C" fn() -> i64>(code_ptr);
+        let result = code_fn();
+        println!("Dynamic array test result: {}", result);
+        if result == 40 { Ok(result) } else { Err(format!("Dynamic array test failed: expected 40, got {}", result)) }
+    }
+}
+
 const FOO_CODE: &str = r#"
     fn foo(a: i64, b: i64) -> (c: i64) {
         c = if a {
@@ -331,5 +344,13 @@ fn array_test() -> (r: i64) {
     arr = [10, 20, 30] 
     x = arr[2]
     r = x
+}
+"#;
+
+const DYNAMIC_ARRAY_TEST_CODE: &str = r#"
+fn dynamic_array_test() -> (r: i64) {
+    arr = array [10, 20, 30]
+    array_push(arr, 40)
+    r = arr[3]
 }
 "#;
