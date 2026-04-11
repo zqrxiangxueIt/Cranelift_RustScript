@@ -1,7 +1,7 @@
 use super::*;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use crossbeam::scope;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 
 #[test]
 fn test_basic_push_pop() {
@@ -119,7 +119,8 @@ fn test_concurrency() {
                 let _ = *x;
             }
         });
-    }).unwrap();
+    })
+    .unwrap();
 }
 
 #[test]

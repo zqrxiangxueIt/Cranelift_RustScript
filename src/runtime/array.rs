@@ -39,7 +39,10 @@ pub extern "C" fn dynamic_array_cap_i64(arr_ptr: *const DynamicArray<i64>) -> us
 
 /// Get a pointer to an element at index
 #[unsafe(no_mangle)]
-pub extern "C" fn dynamic_array_get_ptr_i64(arr_ptr: *mut DynamicArray<i64>, index: usize) -> *mut i64 {
+pub extern "C" fn dynamic_array_get_ptr_i64(
+    arr_ptr: *mut DynamicArray<i64>,
+    index: usize,
+) -> *mut i64 {
     let arr = unsafe { &mut *arr_ptr };
     if index >= arr.len() {
         ptr::null_mut()

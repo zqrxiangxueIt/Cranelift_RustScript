@@ -1,8 +1,8 @@
+pub mod array;
 pub mod io;
 pub mod math;
-pub mod string;
-pub mod array;
 pub mod registry;
+pub mod string;
 
 #[cfg(feature = "mkl")]
 pub mod mkl;

@@ -1,6 +1,6 @@
 use anyhow::{Context, Result, anyhow};
-use cranelift_jit_demo::jit;
 use cranelift_jit_demo::cli::Cli;
+use cranelift_jit_demo::jit;
 use std::fs;
 use std::mem;
 use std::path::Path;
@@ -33,12 +33,13 @@ fn run_script(path: &Path) -> Result<()> {
     }
 
     // 2. Read source code
-    let source = fs::read_to_string(path)
-        .with_context(|| format!("Failed to read file: {:?}", path))?;
+    let source =
+        fs::read_to_string(path).with_context(|| format!("Failed to read file: {:?}", path))?;
 
     // 3. JIT Compile
     let mut jit = jit::JIT::default();
-    let code_ptr = jit.compile(&source)
+    let code_ptr = jit
+        .compile(&source)
         .map_err(|e| anyhow!("Compilation error: {}", e))?;
 
     // 4. Execute (assuming no arguments for now, or main)
@@ -56,17 +57,32 @@ fn run_all_tests() -> Result<()> {
     let mut jit = jit::JIT::default();
 
     println!("foo(1, 0) = {}", run_foo(&mut jit).map_err(|e| anyhow!(e))?);
-    println!("recursive_fib(10) = {}", run_recursive_fib(&mut jit, 10).map_err(|e| anyhow!(e))?);
-    println!("iterative_fib(10) = {}", run_iterative_fib(&mut jit, 10).map_err(|e| anyhow!(e))?);
-    println!("float_add(1.5, 2.5) = {}", run_float_add(&mut jit, 1.5, 2.5).map_err(|e| anyhow!(e))?);
-    println!("mixed_add(10, 2.5) = {}", run_mixed_add(&mut jit, 10, 2.5, 2.5).map_err(|e| anyhow!(e))?);
-    
+    println!(
+        "recursive_fib(10) = {}",
+        run_recursive_fib(&mut jit, 10).map_err(|e| anyhow!(e))?
+    );
+    println!(
+        "iterative_fib(10) = {}",
+        run_iterative_fib(&mut jit, 10).map_err(|e| anyhow!(e))?
+    );
+    println!(
+        "float_add(1.5, 2.5) = {}",
+        run_float_add(&mut jit, 1.5, 2.5).map_err(|e| anyhow!(e))?
+    );
+    println!(
+        "mixed_add(10, 2.5) = {}",
+        run_mixed_add(&mut jit, 10, 2.5, 2.5).map_err(|e| anyhow!(e))?
+    );
+
     run_hello(&mut jit).map_err(|e| anyhow!(e))?;
-    
-    println!("mul_div(10.0, 5.0) = {}", run_mul_div(&mut jit, 10.0, 5.0).map_err(|e| anyhow!(e))?);
-    
+
+    println!(
+        "mul_div(10.0, 5.0) = {}",
+        run_mul_div(&mut jit, 10.0, 5.0).map_err(|e| anyhow!(e))?
+    );
+
     run_custom_string(&mut jit, "Customize String Test Success!").map_err(|e| anyhow!(e))?;
-    
+
     println!("--- Running String Literal Test ---");
     run_string_test(&mut jit).map_err(|e| anyhow!(e))?;
 
@@ -75,7 +91,7 @@ fn run_all_tests() -> Result<()> {
 
     println!("--- Running Complex Test ---");
     run_complex_test(&mut jit).map_err(|e| anyhow!(e))?;
-    
+
     println!("--- Running Array Test ---");
     run_array_test(&mut jit).map_err(|e| anyhow!(e))?;
 
@@ -93,6 +109,7 @@ fn run_all_tests() -> Result<()> {
 
 // --- Test helper functions (migrated from original toy.rs) ---
 
+#[cfg(feature = "mkl")]
 fn run_mkl_test(jit: &mut jit::JIT) -> Result<(), String> {
     let code = r#"
     fn test_mkl(c: [f64; 4]) -> (r: i64) {
@@ -102,20 +119,23 @@ fn run_mkl_test(jit: &mut jit::JIT) -> Result<(), String> {
         r = 0
     }
     "#;
-    
+
     unsafe {
         let code_ptr = jit.compile(code)?;
         let func: extern "C" fn(*mut f64) -> i64 = mem::transmute(code_ptr);
-        
+
         let mut c = [0.0f64; 4];
         func(c.as_mut_ptr());
-        
+
         println!("MKL DGEMM Result Matrix C: {:?}", c);
         if c[0] == 19.0 && c[1] == 22.0 && c[2] == 43.0 && c[3] == 50.0 {
             println!("MKL DGEMM Test Passed!");
             Ok(())
         } else {
-            Err(format!("MKL DGEMM Test Failed: expected [19, 22, 43, 50], got {:?}", c))
+            Err(format!(
+                "MKL DGEMM Test Failed: expected [19, 22, 43, 50], got {:?}",
+                c
+            ))
         }
     }
 }
@@ -139,7 +159,7 @@ fn run_foo(jit: &mut jit::JIT) -> Result<i64, String> {
     unsafe {
         let code_ptr = jit.compile(FOO_CODE)?;
         let code_fn = mem::transmute::<_, extern "C" fn(i64, i64) -> i64>(code_ptr);
-        Ok(code_fn(1, 0))  
+        Ok(code_fn(1, 0))
     }
 }
 
@@ -150,7 +170,7 @@ fn run_recursive_fib(jit: &mut jit::JIT, input: i64) -> Result<i64, String> {
         Ok(code_fn(input))
     }
 }
- 
+
 fn run_iterative_fib(jit: &mut jit::JIT, input: i64) -> Result<i64, String> {
     unsafe {
         let code_ptr = jit.compile(ITERATIVE_FIB_CODE)?;
@@ -217,27 +237,42 @@ fn run_complex_test(jit: &mut jit::JIT) -> Result<i64, String> {
         let code_fn = mem::transmute::<_, extern "C" fn() -> i64>(code_ptr);
         let result = code_fn();
         println!("Complex Test Status: {}", result);
-        if result == 1 { Ok(result) } else { Err(format!("Complex test failed")) }
+        if result == 1 {
+            Ok(result)
+        } else {
+            Err(format!("Complex test failed"))
+        }
     }
 }
 
 fn run_array_test(jit: &mut jit::JIT) -> Result<i64, String> {
-     unsafe {
+    unsafe {
         let code_ptr = jit.compile(ARRAY_TEST_CODE)?;
         let code_fn = mem::transmute::<_, extern "C" fn() -> i64>(code_ptr);
         let result = code_fn();
         println!("Array test result: {}", result);
-        if result == 30 { Ok(result) } else { Err(format!("Array test failed: expected 30, got {}", result)) }
+        if result == 30 {
+            Ok(result)
+        } else {
+            Err(format!("Array test failed: expected 30, got {}", result))
+        }
     }
 }
 
 fn run_dynamic_array_test(jit: &mut jit::JIT) -> Result<i64, String> {
-     unsafe {
+    unsafe {
         let code_ptr = jit.compile(DYNAMIC_ARRAY_TEST_CODE)?;
         let code_fn = mem::transmute::<_, extern "C" fn() -> i64>(code_ptr);
         let result = code_fn();
         println!("Dynamic array test result: {}", result);
-        if result == 40 { Ok(result) } else { Err(format!("Dynamic array test failed: expected 40, got {}", result)) }
+        if result == 40 {
+            Ok(result)
+        } else {
+            Err(format!(
+                "Dynamic array test failed: expected 40, got {}",
+                result
+            ))
+        }
     }
 }
 

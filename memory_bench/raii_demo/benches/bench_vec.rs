@@ -54,5 +54,11 @@ fn bench_iter_raii(c: &mut Criterion) {
     });
 }
 
-criterion_group!(benches, bench_push_std, bench_push_raii, bench_iter_std, bench_iter_raii);
+criterion_group!(
+    benches,
+    bench_push_std,
+    bench_push_raii,
+    bench_iter_std,
+    bench_iter_raii
+);
 criterion_main!(benches);

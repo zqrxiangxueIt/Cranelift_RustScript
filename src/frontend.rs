@@ -58,18 +58,18 @@ peg::parser!(pub grammar parser() for str {
             //)
     pub rule function() -> (String, Vec<(String, Type)>, (String, Type), Vec<Expr>)
         //允许在函数定义的最开始出现任意数量（ * ）的空格、制表符或换行符；要求 接下来必须紧跟字符串 fn；
-        // _ ：这是一个在别处定义的规则（通常代表任意空白字符），表示允许 fn 和名字之间有空格调用 
+        // _ ：这是一个在别处定义的规则（通常代表任意空白字符），表示允许 fn 和名字之间有空格调用
         //identifier() 规则去解析一个标识符（比如 add ），把解析出来的结果（一个字符串）赋值给变量 name
-        = [' ' | '\t' | '\n']* "fn" _ name:identifier() _ 
+        = [' ' | '\t' | '\n']* "fn" _ name:identifier() _
         //"(" ... ")" ：要求必须有一对圆括号包裹。
         // params:(...) ：把括号里解析出来的内容赋值给 params 变量。
-        // (...) ** ","：这是一个 PEG 的特殊语法，意思是 “被逗号分隔的列表” 
+        // (...) ** ","：这是一个 PEG 的特殊语法，意思是 “被逗号分隔的列表”
         //内部结构 (_ i:identifier() _ ":" _ t:type_name() _ {(i, t)}) ：
             //- i:identifier() ：解析参数名，存入 i 。
             //- ":" ：中间必须有个冒号。
             //- t:type_name() ：解析类型名，存入 t 。
-            //- {(i, t)} ：这是 Rust 代码块。对于每一个参数，把它打包成一个 Rust 元组 (参数名, 类型) 返回 
-        //即这一行会解析出像 (a: i32, b: i64) 这样的结构，并生成一个 Vec<(String, Type)>     
+            //- {(i, t)} ：这是 Rust 代码块。对于每一个参数，把它打包成一个 Rust 元组 (参数名, 类型) 返回
+        //即这一行会解析出像 (a: i32, b: i64) 这样的结构，并生成一个 Vec<(String, Type)>
         "(" params:((_ i:identifier() _ ":" _ t:type_name() _ {(i, t)}) ** ",") ")" _
         "->" _
         // 部逻辑和参数列表完全一样：解析 名字: 类型 （例如 r: i64 ），并打包成 (String, Type)
@@ -130,7 +130,7 @@ peg::parser!(pub grammar parser() for str {
     ///    - a:@ ：左边的操作数，用 @ 表示“捕获”（匹配到的内容会被暂存起来）
     ///    - _ "操作符" _ ：中间的操作符，这里是 + 或 -
     ///    - b:(@) ：右边的操作数，也用 @ 表示“捕获”
-    ///    - { 表达式 } ：匹配成功后，执行的 Rust 代码，这里是创建一个 Add 或 Sub 表达式            
+    ///    - { 表达式 } ：匹配成功后，执行的 Rust 代码，这里是创建一个 Add 或 Sub 表达式
     rule binary_op() -> Expr = precedence!{
         a:@ _ "==" _ b:(@) { Expr::Eq(Box::new(a), Box::new(b)) }
         a:@ _ "!=" _ b:(@) { Expr::Ne(Box::new(a), Box::new(b)) }
@@ -172,16 +172,16 @@ peg::parser!(pub grammar parser() for str {
         / "complex64" { Type::Complex64 }
         / "complex128" { Type::Complex128 }
         / "array" _ "<" _ t:type_name() _ ">" { Type::DynamicArray(Box::new(t)) }
-        / "[" _ t:type_name() _ ";" _ len:$(['0'..='9']+) _ "]" { 
-            Type::Array(Box::new(t), len.parse().unwrap()) 
+        / "[" _ t:type_name() _ ";" _ len:$(['0'..='9']+) _ "]" {
+            Type::Array(Box::new(t), len.parse().unwrap())
         }
 
     //$ 符号 ：这是 PEG 的操作符，意思是“捕获匹配到的原始字符串”。如果不加 $ ，匹配成功了但你拿不到具体的文本内容
     //返回值 ：把捕获到的切片转成 String 返回
     rule identifier() -> String
-        = quiet!{ 
-            n:$(!(keyword() !['a'..='z' | 'A'..='Z' | '0'..='9' | '_']) ['a'..='z' | 'A'..='Z' | '_']['a'..='z' | 'A'..='Z' | '0'..='9' | '_']*) 
-            { n.to_owned() } 
+        = quiet!{
+            n:$(!(keyword() !['a'..='z' | 'A'..='Z' | '0'..='9' | '_']) ['a'..='z' | 'A'..='Z' | '_']['a'..='z' | 'A'..='Z' | '0'..='9' | '_']*)
+            { n.to_owned() }
         }
         / expected!("identifier")
 
@@ -233,5 +233,5 @@ peg::parser!(pub grammar parser() for str {
             Expr::ComplexLiteral(0.0, i.parse().unwrap(), Type::Complex128)
         }
 
-    rule _() =  quiet!{[' ' | '\t']*} 
+    rule _() =  quiet!{[' ' | '\t']*}
 });

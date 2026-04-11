@@ -8,10 +8,10 @@ fn test_math_functions() {
         r = sin(x)
     }
     "#;
-    
+
     let func_ptr = jit.compile(code).unwrap();
     let func: fn(f64) -> f64 = unsafe { std::mem::transmute(func_ptr) };
-    
+
     let result = func(std::f64::consts::PI / 2.0);
     assert!((result - 1.0).abs() < 1e-6);
 }
@@ -24,10 +24,10 @@ fn test_pow() {
         r = pow(b, e)
     }
     "#;
-    
+
     let func_ptr = jit.compile(code).unwrap();
     let func: fn(f64, f64) -> f64 = unsafe { std::mem::transmute(func_ptr) };
-    
+
     let result = func(2.0, 3.0);
     assert!((result - 8.0).abs() < 1e-6);
 }
@@ -46,16 +46,16 @@ fn test_mkl_dgemm() {
         r = 0
     }
     "#;
-    
+
     let func_ptr = jit.compile(code).unwrap();
     // The JIT function signature will be: extern "C" fn(*mut f64) -> i64
     // Wait, the JIT function itself ONLY gets the pointer for its own parameters.
     // It doesn't get the length expanded for its OWN parameters.
     let func: fn(*mut f64) -> i64 = unsafe { std::mem::transmute(func_ptr) };
-    
+
     let mut c = [0.0f64; 4];
     func(c.as_mut_ptr());
-    
+
     println!("Resulting matrix C: {:?}", c);
     assert_eq!(c[0], 19.0);
     assert_eq!(c[1], 22.0);

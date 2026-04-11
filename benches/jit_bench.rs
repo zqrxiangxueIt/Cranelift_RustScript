@@ -1,5 +1,5 @@
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use cranelift_jit_demo::jit::JIT;
+use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use raii_demo::DynamicArray;
 
 fn bench_math(c: &mut Criterion) {
@@ -29,7 +29,7 @@ fn bench_array_sum(c: &mut Criterion) {
     "#;
     let func_ptr = jit.compile(code).unwrap();
     let func: fn() -> f64 = unsafe { std::mem::transmute(func_ptr) };
-    
+
     c.bench_function("jit_sum_array", |b| b.iter(|| func()));
 }
 
@@ -48,20 +48,31 @@ fn bench_dynamic_array(c: &mut Criterion) {
     "#;
     let func_ptr = jit.compile(code).unwrap();
     let func: fn() -> i64 = unsafe { std::mem::transmute(func_ptr) };
-    
+
     c.bench_function("jit_dynamic_array", |b| b.iter(|| func()));
 }
 
 fn bench_native_dynamic_array(c: &mut Criterion) {
-    c.bench_function("native_dynamic_array", |b| b.iter(|| {
-        let mut arr = DynamicArray::<i64>::new();
-        for i in 1..=10 { arr.push(i); }
-        for i in 0..100 {
-            arr.push(i as i64);
-        }
-        black_box(arr.len())
-    }));
+    c.bench_function("native_dynamic_array", |b| {
+        b.iter(|| {
+            let mut arr = DynamicArray::<i64>::new();
+            for i in 1..=10 {
+                arr.push(i);
+            }
+            for i in 0..100 {
+                arr.push(i as i64);
+            }
+            black_box(arr.len())
+        })
+    });
 }
 
-criterion_group!(benches, bench_math, bench_native_sin, bench_array_sum, bench_dynamic_array, bench_native_dynamic_array);
+criterion_group!(
+    benches,
+    bench_math,
+    bench_native_sin,
+    bench_array_sum,
+    bench_dynamic_array,
+    bench_native_dynamic_array
+);
 criterion_main!(benches);

@@ -15,7 +15,9 @@ pub extern "C" fn toy_rand() -> i64 {
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn toy_sum_array(ptr: *const f64, len: usize) -> f64 {
-    if ptr.is_null() { return 0.0; }
+    if ptr.is_null() {
+        return 0.0;
+    }
     let slice = unsafe { slice::from_raw_parts(ptr, len) };
     slice.iter().sum()
 }

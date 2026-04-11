@@ -1,6 +1,6 @@
 use raii_demo::DynamicArray;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 
 struct Tracked(usize, Arc<AtomicUsize>);
 
@@ -14,7 +14,7 @@ impl Drop for Tracked {
 fn main() {
     println!("--- Exception Safety & RAII Example ---");
     let drop_count = Arc::new(AtomicUsize::new(0));
-    
+
     {
         let mut arr = DynamicArray::new();
         for i in 0..3 {
@@ -24,6 +24,9 @@ fn main() {
         // Scope ends here, arr is dropped
     }
 
-    println!("Total elements dropped: {}", drop_count.load(Ordering::SeqCst));
+    println!(
+        "Total elements dropped: {}",
+        drop_count.load(Ordering::SeqCst)
+    );
     assert_eq!(drop_count.load(Ordering::SeqCst), 3);
 }

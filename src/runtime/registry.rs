@@ -1,5 +1,5 @@
+use crate::runtime::{array, io, math, string};
 use cranelift_jit::JITBuilder;
-use crate::runtime::{io, math, string, array};
 
 #[cfg(feature = "mkl")]
 use crate::runtime::mkl;
@@ -30,7 +30,10 @@ pub fn register_builtins(builder: &mut JITBuilder) {
     builder.symbol("array_pop", array::dynamic_array_pop_i64 as *const u8);
     builder.symbol("array_len", array::dynamic_array_len_i64 as *const u8);
     builder.symbol("array_cap", array::dynamic_array_cap_i64 as *const u8);
-    builder.symbol("array_get_ptr", array::dynamic_array_get_ptr_i64 as *const u8);
+    builder.symbol(
+        "array_get_ptr",
+        array::dynamic_array_get_ptr_i64 as *const u8,
+    );
     builder.symbol("array_set", array::array_set as *const u8);
     builder.symbol("array_drop", array::dynamic_array_drop_i64 as *const u8);
 
@@ -56,10 +59,8 @@ pub fn register_builtins(builder: &mut JITBuilder) {
 /// Pre-set package for MKL functions.
 #[cfg(feature = "mkl")]
 pub fn register_mkl(builder: &mut JITBuilder) {
-    unsafe {
-        builder.symbol("cblas_dgemm", mkl::cblas_dgemm as *const u8);
-        builder.symbol("toy_mkl_dgemm", mkl::toy_mkl_dgemm as *const u8);
-    }
+    builder.symbol("cblas_dgemm", mkl::cblas_dgemm as *const u8);
+    builder.symbol("toy_mkl_dgemm", mkl::toy_mkl_dgemm as *const u8);
 }
 
 /// Pre-set package for GPU functions.

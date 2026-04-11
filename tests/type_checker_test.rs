@@ -1,5 +1,5 @@
-use cranelift_jit_demo::type_checker::{TypeChecker, infer_type};
 use cranelift_jit_demo::frontend::{Expr, Type};
+use cranelift_jit_demo::type_checker::{TypeChecker, infer_type};
 
 #[test]
 fn test_resolve_func() {
@@ -19,11 +19,14 @@ fn test_infer_type_simple() {
 
 #[test]
 fn test_infer_type_array() {
-    let expr = Expr::ArrayLiteral(vec![
-        Expr::Literal("1.0".to_string(), Type::F64),
-        Expr::Literal("2.0".to_string(), Type::F64)
-    ], Type::I64); // Placeholder type
-    
+    let expr = Expr::ArrayLiteral(
+        vec![
+            Expr::Literal("1.0".to_string(), Type::F64),
+            Expr::Literal("2.0".to_string(), Type::F64),
+        ],
+        Type::I64,
+    ); // Placeholder type
+
     let ty = infer_type(&expr, &|_| None);
     if let Type::Array(inner, len) = ty {
         assert_eq!(*inner, Type::F64);

@@ -1,8 +1,8 @@
-use std::alloc::{alloc, dealloc, realloc, Layout, handle_alloc_error};
-use std::ptr::{self, NonNull};
+use std::alloc::{alloc, dealloc, handle_alloc_error, realloc, Layout};
 use std::marker::PhantomData;
-use std::ops::{Deref, DerefMut};
 use std::mem;
+use std::ops::{Deref, DerefMut};
+use std::ptr::{self, NonNull};
 
 #[derive(Debug, Clone, Copy)]
 pub struct AllocError;
@@ -33,7 +33,10 @@ impl<T> DynamicArray<T> {
     /// 创建一个空的动态数组，不分配内存
     pub fn new() -> Self {
         // 不支持零尺寸类型（ZST），简化演示逻辑
-        assert!(mem::size_of::<T>() != 0, "Zero-sized types not supported in this demo");
+        assert!(
+            mem::size_of::<T>() != 0,
+            "Zero-sized types not supported in this demo"
+        );
         Self {
             ptr: NonNull::dangling(),
             cap: 0,
@@ -44,7 +47,10 @@ impl<T> DynamicArray<T> {
 
     /// 创建具有指定初始容量的动态数组
     pub fn with_capacity(capacity: usize) -> Self {
-        assert!(mem::size_of::<T>() != 0, "Zero-sized types not supported in this demo");
+        assert!(
+            mem::size_of::<T>() != 0,
+            "Zero-sized types not supported in this demo"
+        );
         if capacity == 0 {
             return Self::new();
         }
@@ -165,15 +171,16 @@ impl<T> DynamicArray<T> {
 
     fn do_realloc(&mut self, new_cap: usize) -> Result<(), AllocError> {
         let new_layout = Layout::array::<T>(new_cap).map_err(|_| AllocError)?;
-        assert!(new_layout.size() <= isize::MAX as usize, "Allocation too large");
+        assert!(
+            new_layout.size() <= isize::MAX as usize,
+            "Allocation too large"
+        );
 
         let new_ptr = if self.cap == 0 {
             unsafe { alloc(new_layout) }
         } else {
             let old_layout = Layout::array::<T>(self.cap).unwrap();
-            unsafe {
-                realloc(self.ptr.as_ptr() as *mut u8, old_layout, new_layout.size())
-            }
+            unsafe { realloc(self.ptr.as_ptr() as *mut u8, old_layout, new_layout.size()) }
         };
 
         self.ptr = match NonNull::new(new_ptr as *mut T) {
@@ -235,13 +242,13 @@ impl<T> IntoIterator for DynamicArray<T> {
         let ptr = self.ptr;
         let cap = self.cap;
         let len = self.len;
-        
+
         // 关键：避免 DynamicArray 的 Drop 被调用
         mem::forget(self);
 
         let start = ptr.as_ptr();
         let end = unsafe { start.add(len) };
-        
+
         IntoIter {
             ptr,
             cap,
@@ -278,8 +285,11 @@ impl<T> Drop for IntoIter<T> {
             unsafe {
                 // 1. 析构剩余未消费的元素
                 let remaining_len = (self.end as usize - self.start as usize) / mem::size_of::<T>();
-                ptr::drop_in_place(ptr::slice_from_raw_parts_mut(self.start as *mut T, remaining_len));
-                
+                ptr::drop_in_place(ptr::slice_from_raw_parts_mut(
+                    self.start as *mut T,
+                    remaining_len,
+                ));
+
                 // 2. 释放内存块
                 let layout = Layout::array::<T>(self.cap).unwrap();
                 dealloc(self.ptr.as_ptr() as *mut u8, layout);

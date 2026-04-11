@@ -21,7 +21,7 @@ jobs:
       - name: Install Nightly for Miri
         uses: dtolnay/rust-toolchain@nightly
         with:
-          components: miri
+          components: miri, rustfmt
           
       - name: Install Valgrind
         run: sudo apt-get update && sudo apt-get install -y valgrind

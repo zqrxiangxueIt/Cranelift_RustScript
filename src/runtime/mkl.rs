@@ -24,10 +24,17 @@ unsafe extern "C" {
 #[cfg(feature = "mkl")]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn toy_mkl_dgemm(
-    m: i64, n: i64, k: i64,
-    alpha: f64, a_ptr: *const f64, _a_len: usize,
-    beta: f64, b_ptr: *const f64, _b_len: usize,
-    c_ptr: *mut f64, _c_len: usize
+    m: i64,
+    n: i64,
+    k: i64,
+    alpha: f64,
+    a_ptr: *const f64,
+    _a_len: usize,
+    beta: f64,
+    b_ptr: *const f64,
+    _b_len: usize,
+    c_ptr: *mut f64,
+    _c_len: usize,
 ) {
     unsafe {
         cblas_dgemm(
