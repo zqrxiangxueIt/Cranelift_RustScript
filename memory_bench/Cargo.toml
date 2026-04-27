@@ -10,10 +10,3 @@ mimalloc = { version = "0.1", default-features = false }
 criterion = "0.5"
 rand = "0.8"
 
-[[bench]]
-name = "bench_system"
-harness = false
-
-[[bench]]
-name = "bench_mimalloc"
-harness = false
