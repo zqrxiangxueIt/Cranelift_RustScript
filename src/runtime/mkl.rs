@@ -29,13 +29,28 @@ pub unsafe extern "C" fn toy_mkl_dgemm(
     k: i64,
     alpha: f64,
     a_ptr: *const f64,
-    _a_len: usize,
+    a_len: usize,
     beta: f64,
     b_ptr: *const f64,
-    _b_len: usize,
+    b_len: usize,
     c_ptr: *mut f64,
-    _c_len: usize,
-) {
+    c_len: usize,
+) -> i64 {
+    // Validate array sizes: A is m x k, B is k x n, C is m x n
+    let required_a = (m as usize) * (k as usize);
+    let required_b = (k as usize) * (n as usize);
+    let required_c = (m as usize) * (n as usize);
+
+    if a_len < required_a {
+        return -1; // Error: a_len insufficient (a_len < m * k)
+    }
+    if b_len < required_b {
+        return -2; // Error: b_len insufficient (b_len < k * n)
+    }
+    if c_len < required_c {
+        return -3; // Error: c_len insufficient (c_len < m * n)
+    }
+
     unsafe {
         cblas_dgemm(
             101, // CblasRowMajor
@@ -54,4 +69,5 @@ pub unsafe extern "C" fn toy_mkl_dgemm(
             n as MklInt, // ldc
         );
     }
+    0 // Success
 }

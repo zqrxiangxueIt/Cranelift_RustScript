@@ -24,7 +24,7 @@ pub fn register_builtins(builder: &mut JITBuilder) {
     builder.symbol("print_f64", io::toy_print_f64 as *const u8);
     builder.symbol("print_i64", io::toy_print_i64 as *const u8);
 
-    // DynamicArray symbols
+    // DynamicArray symbols for i64
     builder.symbol("array_new_i64", array::dynamic_array_new_i64 as *const u8);
     builder.symbol("array_push", array::dynamic_array_push_i64 as *const u8);
     builder.symbol("array_pop", array::dynamic_array_pop_i64 as *const u8);
@@ -36,6 +36,32 @@ pub fn register_builtins(builder: &mut JITBuilder) {
     );
     builder.symbol("array_set", array::array_set as *const u8);
     builder.symbol("array_drop", array::dynamic_array_drop_i64 as *const u8);
+
+    // DynamicArray symbols for f64
+    builder.symbol("array_new_f64", array::dynamic_array_new_f64 as *const u8);
+    builder.symbol("array_push_f64", array::dynamic_array_push_f64 as *const u8);
+    builder.symbol("array_pop_f64", array::dynamic_array_pop_f64 as *const u8);
+    builder.symbol("array_len_f64", array::dynamic_array_len_f64 as *const u8);
+    builder.symbol("array_cap_f64", array::dynamic_array_cap_f64 as *const u8);
+    builder.symbol(
+        "array_get_ptr_f64",
+        array::dynamic_array_get_ptr_f64 as *const u8,
+    );
+    builder.symbol("array_set_f64", array::array_set_f64 as *const u8);
+    builder.symbol("array_drop_f64", array::dynamic_array_drop_f64 as *const u8);
+
+    // DynamicArray symbols for complex128
+    builder.symbol("array_new_complex128", array::dynamic_array_new_complex128 as *const u8);
+    builder.symbol("array_push_complex128", array::dynamic_array_push_complex128 as *const u8);
+    builder.symbol("array_pop_complex128", array::dynamic_array_pop_complex128 as *const u8);
+    builder.symbol("array_len_complex128", array::dynamic_array_len_complex128 as *const u8);
+    builder.symbol("array_cap_complex128", array::dynamic_array_cap_complex128 as *const u8);
+    builder.symbol(
+        "array_get_ptr_complex128",
+        array::dynamic_array_get_ptr_complex128 as *const u8,
+    );
+    builder.symbol("array_set_complex128", array::array_set_complex128 as *const u8);
+    builder.symbol("array_drop_complex128", array::dynamic_array_drop_complex128 as *const u8);
 
     // Register math functions
     builder.symbol("sin", math::toy_sin as *const u8);
@@ -51,9 +77,6 @@ pub fn register_builtins(builder: &mut JITBuilder) {
     // Feature-gated registration packages
     #[cfg(feature = "mkl")]
     register_mkl(builder);
-
-    #[cfg(feature = "gpu")]
-    register_gpu(builder);
 }
 
 /// Pre-set package for MKL functions.
@@ -61,12 +84,6 @@ pub fn register_builtins(builder: &mut JITBuilder) {
 pub fn register_mkl(builder: &mut JITBuilder) {
     builder.symbol("cblas_dgemm", mkl::cblas_dgemm as *const u8);
     builder.symbol("toy_mkl_dgemm", mkl::toy_mkl_dgemm as *const u8);
-}
-
-/// Pre-set package for GPU functions.
-#[cfg(feature = "gpu")]
-pub fn register_gpu(_builder: &mut JITBuilder) {
-    // Placeholder for CUDA/GPU interface registration
 }
 
 /// Minimum set for basic arithmetic and memory (default).

@@ -23,7 +23,6 @@ raii_demo = { path = "memory_bench/raii_demo" }
 [features]
 default = []
 mkl = ["dep:intel-mkl-src"]
-gpu = []
 
 [dev-dependencies]
 criterion = "0.8.1"
