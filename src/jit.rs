@@ -1,4 +1,6 @@
 use crate::frontend::{Expr, Type as FrontendType, parser};
+use crate::optimizer;
+use crate::ownership;
 use crate::runtime;
 use crate::type_checker::{self, TypeChecker};
 use cranelift::codegen::ir::BlockArg;
@@ -65,6 +67,21 @@ impl JIT {
         // 首先，解析字符串，生成AST节点
         let (name, params, the_return, stmts) =
             parser::function(input).map_err(|e| e.to_string())?;
+
+        // 应用常量折叠优化
+        let stmts = optimizer::fold_constants_in_stmts(stmts);
+
+        // 所有权检查：确保 DynamicArray 不泄漏
+        {
+            let mut checker = ownership::OwnershipChecker::new();
+            let errors = checker.analyze_function(&params, &stmts, &the_return.0);
+            if !errors.is_empty() {
+                let error_msgs: Vec<String> = errors.iter()
+                    .map(|e| e.to_string())
+                    .collect();
+                return Err(format!("ownership errors:\n{}", error_msgs.join("\n")));
+            }
+        }
 
         // 接着，将AST节点转换为Cranelift IR
         self.translate(name.clone(), params, the_return, stmts)?;
@@ -161,6 +178,7 @@ impl JIT {
             string_counter: 0,
             type_checker: &self.type_checker,
             dynamic_arrays: Vec::new(),
+            explicitly_dropped: Vec::new(),
         };
 
         // 逐条翻译函数体语句
@@ -175,21 +193,38 @@ impl JIT {
             .expect("return variable not defined");
         let return_value = trans.builder.use_var(*return_variable);
 
-        // 释放未返回的动态数组
-        let mut drop_sig = trans.module.make_signature();
-        drop_sig.params.push(AbiParam::new(types::I64));
-        drop_sig.returns.push(AbiParam::new(types::I64)); // return 0
-        let drop_callee = trans
-            .module
-            .declare_function("array_drop", Linkage::Import, &drop_sig)
-            .unwrap();
-        let drop_local_callee = trans
-            .module
-            .declare_func_in_func(drop_callee, trans.builder.func);
-
+        // 释放未返回的动态数组 - 根据元素类型调用正确的 drop 函数
+        // 跳过已显式 drop 的数组和返回变量
         let dynamic_arrays = trans.dynamic_arrays.clone();
-        for var in dynamic_arrays {
-            if var != *return_variable {
+        for (var, arr_ty) in dynamic_arrays {
+            // 跳过返回变量（已返回给调用者）
+            if var == *return_variable {
+                continue;
+            }
+            // 跳过已显式 drop 的数组
+            if trans.explicitly_dropped.contains(&var) {
+                continue;
+            }
+            // 从 DynamicArray<Type> 中提取元素类型
+            if let FrontendType::DynamicArray(elem_ty) = arr_ty {
+                let drop_func_name = match elem_ty.as_ref() {
+                    FrontendType::I64 | FrontendType::I32 | FrontendType::I16 | FrontendType::I8 => "array_drop",
+                    FrontendType::F64 => "array_drop_f64",
+                    FrontendType::Complex128 => "array_drop_complex128",
+                    _ => "array_drop", // 默认使用 i64 版本
+                };
+
+                let mut drop_sig = trans.module.make_signature();
+                drop_sig.params.push(AbiParam::new(types::I64));
+                drop_sig.returns.push(AbiParam::new(types::I64));
+                let drop_callee = trans
+                    .module
+                    .declare_function(drop_func_name, Linkage::Import, &drop_sig)
+                    .unwrap();
+                let drop_local_callee = trans
+                    .module
+                    .declare_func_in_func(drop_callee, trans.builder.func);
+
                 let val = trans.builder.use_var(var);
                 trans.builder.ins().call(drop_local_callee, &[val]);
             }
@@ -239,7 +274,8 @@ struct FunctionTranslator<'a> {
     current_func_ret_type: types::Type,                   // 当前函数返回类型
     string_counter: usize,
     type_checker: &'a TypeChecker,
-    dynamic_arrays: Vec<Variable>,
+    dynamic_arrays: Vec<(Variable, FrontendType)>, // (variable, element_type)
+    explicitly_dropped: Vec<Variable>, // 已显式 drop 的数组，不再自动 drop
 }
 
 impl<'a> FunctionTranslator<'a> {
@@ -250,14 +286,36 @@ impl<'a> FunctionTranslator<'a> {
                 //// 翻译字面量
                 let cl_ty: types::Type = to_cranelift_type(&ty);
                 match ty {
-                    FrontendType::F32 => self.builder.ins().f32const(val.parse::<f32>().unwrap()),
-                    FrontendType::F64 => self.builder.ins().f64const(val.parse::<f64>().unwrap()),
+                    FrontendType::F32 => self.builder.ins().f32const(
+                        val.parse::<f32>().expect(&format!("Invalid f32 literal: {}", val))
+                    ),
+                    FrontendType::F64 => self.builder.ins().f64const(
+                        val.parse::<f64>().expect(&format!("Invalid f64 literal: {}", val))
+                    ),
                     _ => {
-                        let int_val = val.parse::<i128>().unwrap();
+                        let int_val = val.parse::<i128>()
+                            .expect(&format!("Invalid integer literal: {}", val));
                         if cl_ty == types::I128 {
-                            // 暂时将 i128 字面量视为 i64，因为 iconst 支持 Imm64。
-                            // 真正的 i128 支持需要从两个 i64 构建值。
-                            InstBuilder::iconst(self.builder.ins(), cl_ty, int_val as i64)
+                            // 将 i128 分解为两个 i64: 低位和高位
+                            // i128 在内存中是小端存储 (低字节在前)
+                            let low_bits = (int_val & 0xFFFFFFFFFFFFFFFF) as i64;
+                            let high_bits = ((int_val >> 64) & 0xFFFFFFFFFFFFFFFF) as i64;
+
+                            // 创建一个 16 字节的栈槽来存储 i128 值
+                            let ss = self.builder.create_sized_stack_slot(StackSlotData::new(
+                                StackSlotKind::ExplicitSlot,
+                                16,
+                                8, // 8 字节对齐
+                            ));
+
+                            // 将低 64 位存储在偏移 0，高 64 位存储在偏移 8
+                            let low_val = InstBuilder::iconst(self.builder.ins(), types::I64, low_bits);
+                            let high_val = InstBuilder::iconst(self.builder.ins(), types::I64, high_bits);
+                            self.builder.ins().stack_store(low_val, ss, 0);
+                            self.builder.ins().stack_store(high_val, ss, 8);
+
+                            // 作为 i128 加载
+                            self.builder.ins().stack_load(types::I128, ss, 0)
                         } else {
                             InstBuilder::iconst(self.builder.ins(), cl_ty, int_val as i64)
                         }
@@ -379,6 +437,9 @@ impl<'a> FunctionTranslator<'a> {
                 let val = self.translate_expr(*expr);
                 self.translate_cast(val, to_cranelift_type(&target_ty))
             }
+            Expr::Drop(name) => {
+                self.translate_drop(&name)
+            }
         }
     }
 
@@ -484,7 +545,8 @@ impl<'a> FunctionTranslator<'a> {
     fn translate_assign(&mut self, name: String, expr: Expr) -> Value {
         let new_value = self.translate_expr(expr);
         let (variable, ty) = {
-            let (v, t) = self.variables.get(&name).unwrap();
+            let (v, t) = self.variables.get(&name)
+                .expect(&format!("Variable '{}' not found - compiler bug in variable declaration", name));
             (*v, t.clone())
         };
 
@@ -500,12 +562,50 @@ impl<'a> FunctionTranslator<'a> {
         self.builder.def_var(variable, final_value);
 
         if matches!(ty, FrontendType::DynamicArray(_)) {
-            if !self.dynamic_arrays.contains(&variable) {
-                self.dynamic_arrays.push(variable);
+            if !self.dynamic_arrays.iter().any(|(v, _)| *v == variable) {
+                self.dynamic_arrays.push((variable, ty));
             }
         }
 
         final_value
+    }
+
+    /// 处理 drop() 显式释放
+    fn translate_drop(&mut self, name: &str) -> Value {
+        // 获取变量
+        let (var, arr_ty) = self.variables.get(name)
+            .expect(&format!("Variable '{}' not found for drop()", name));
+
+        // 标记为已显式 drop
+        self.explicitly_dropped.push(*var);
+
+        // 发射 drop 调用
+        let elem_ty = match arr_ty {
+            FrontendType::DynamicArray(inner) => inner.as_ref(),
+            _ => panic!("drop() can only be called on DynamicArray"),
+        };
+
+        let drop_func_name = match elem_ty {
+            FrontendType::I64 | FrontendType::I32 | FrontendType::I16 | FrontendType::I8 => "array_drop",
+            FrontendType::F64 => "array_drop_f64",
+            FrontendType::Complex128 => "array_drop_complex128",
+            _ => "array_drop", // 默认
+        };
+
+        let mut drop_sig = self.module.make_signature();
+        drop_sig.params.push(AbiParam::new(types::I64));
+        drop_sig.returns.push(AbiParam::new(types::I64));
+        let drop_callee = self.module
+            .declare_function(drop_func_name, Linkage::Import, &drop_sig)
+            .unwrap();
+        let drop_local_callee = self.module
+            .declare_func_in_func(drop_callee, self.builder.func);
+
+        let val = self.builder.use_var(*var);
+        self.builder.ins().call(drop_local_callee, &[val]);
+
+        // drop() 返回 0 表示成功
+        InstBuilder::iconst(self.builder.ins(), types::I64, 0)
     }
 
     /// if-else 语句
@@ -758,14 +858,32 @@ impl<'a> FunctionTranslator<'a> {
         self.builder.ins().stack_addr(types::I64, slot, 0)
     }
 
-    fn translate_dynamic_array_literal(&mut self, elems: Vec<Expr>, _ty: FrontendType) -> Value {
-        // 目前我们只支持 i64 动态数组
+    fn translate_dynamic_array_literal(&mut self, elems: Vec<Expr>, ty: FrontendType) -> Value {
+        // 根据元素类型选择正确的函数
+        // ty 可能是 DynamicArray(inner) 或直接是元素类型 (I64, F64 等)
+        let elem_ty = match &ty {
+            FrontendType::DynamicArray(inner) => *inner.clone(),
+            FrontendType::I64 | FrontendType::I32 | FrontendType::I16 | FrontendType::I8 => ty.clone(),
+            FrontendType::F64 | FrontendType::F32 => ty.clone(),
+            FrontendType::Complex128 | FrontendType::Complex64 => ty.clone(),
+            _ => panic!("Unexpected type for dynamic array literal: {:?}", ty),
+        };
+
+        // 根据元素类型选择 new 和 push 函数名
+        let (new_fn, push_fn, cl_elem_ty) = match elem_ty {
+            FrontendType::I64 => ("array_new_i64", "array_push", types::I64),
+            FrontendType::F64 => ("array_new_f64", "array_push_f64", types::F64),
+            FrontendType::Complex128 => ("array_new_complex128", "array_push_complex128", types::I128),
+            _ => panic!("Unsupported dynamic array element type: {:?}", elem_ty),
+        };
+
+        // 创建数组
         let mut sig = self.module.make_signature();
         sig.returns.push(AbiParam::new(types::I64));
 
         let callee = self
             .module
-            .declare_function("array_new_i64", Linkage::Import, &sig)
+            .declare_function(new_fn, Linkage::Import, &sig)
             .unwrap();
         let local_callee = self.module.declare_func_in_func(callee, self.builder.func);
         let call = self.builder.ins().call(local_callee, &[]);
@@ -775,12 +893,12 @@ impl<'a> FunctionTranslator<'a> {
         if !elems.is_empty() {
             let mut push_sig = self.module.make_signature();
             push_sig.params.push(AbiParam::new(types::I64)); // arr_ptr
-            push_sig.params.push(AbiParam::new(types::I64)); // elem
+            push_sig.params.push(AbiParam::new(cl_elem_ty)); // elem
             push_sig.returns.push(AbiParam::new(types::I64)); // return 0
 
             let push_callee = self
                 .module
-                .declare_function("array_push", Linkage::Import, &push_sig)
+                .declare_function(push_fn, Linkage::Import, &push_sig)
                 .unwrap();
             let push_local_callee = self
                 .module
@@ -788,11 +906,11 @@ impl<'a> FunctionTranslator<'a> {
 
             for elem in elems {
                 let val = self.translate_expr(elem);
-                // 如果需要，提升/转换为 I64
-                let val_i64 = self.translate_cast(val, types::I64);
+                // 如果需要，将值转换为正确的元素类型
+                let val_cast = self.translate_cast(val, cl_elem_ty);
                 self.builder
                     .ins()
-                    .call(push_local_callee, &[arr_ptr, val_i64]);
+                    .call(push_local_callee, &[arr_ptr, val_cast]);
             }
         }
 
@@ -821,7 +939,14 @@ impl<'a> FunctionTranslator<'a> {
         };
 
         if is_dynamic {
-            // 对于动态数组，我们需要调用 array_get_ptr
+            // 对于动态数组，根据元素类型选择正确的 array_get_ptr 函数
+            let get_ptr_fn = match elem_ty {
+                FrontendType::I64 => "array_get_ptr",
+                FrontendType::F64 => "array_get_ptr_f64",
+                FrontendType::Complex128 => "array_get_ptr_complex128",
+                _ => panic!("Unsupported dynamic array element type for index: {:?}", elem_ty),
+            };
+
             let mut sig = self.module.make_signature();
             sig.params.push(AbiParam::new(types::I64)); // arr_ptr
             sig.params.push(AbiParam::new(types::I64)); // index
@@ -829,7 +954,7 @@ impl<'a> FunctionTranslator<'a> {
 
             let callee = self
                 .module
-                .declare_function("array_get_ptr", Linkage::Import, &sig)
+                .declare_function(get_ptr_fn, Linkage::Import, &sig)
                 .unwrap();
             let local_callee = self.module.declare_func_in_func(callee, self.builder.func);
             let call = self
@@ -927,15 +1052,26 @@ impl<'a> FunctionTranslator<'a> {
                     let c2 = self.builder.ins().fmul(r_re, r_re);
                     let d2 = self.builder.ins().fmul(r_im, r_im);
                     let denom = self.builder.ins().fadd(c2, d2);
+
+                    // 检测 denom 是否为 0 (复数除数为零)
+                    let zero = self.builder.ins().f32const(0.0);
+                    let denom_is_zero = self.builder.ins().fcmp(FloatCC::Equal, denom, zero);
+
+                    // 计算分子: (ac+bd) + i(bc-ad)
                     let ac = self.builder.ins().fmul(l_re, r_re);
                     let bd = self.builder.ins().fmul(l_im, r_im);
                     let num_re = self.builder.ins().fadd(ac, bd);
                     let bc = self.builder.ins().fmul(l_im, r_re);
                     let ad = self.builder.ins().fmul(l_re, r_im);
                     let num_im = self.builder.ins().fsub(bc, ad);
+
+                    // 如果 denom 为 0，替换为 1 避免除零
+                    let one_f32 = self.builder.ins().f32const(1.0);
+                    let denom_safe = self.builder.ins().select(denom_is_zero, one_f32, denom);
+
                     (
-                        self.builder.ins().fdiv(num_re, denom),
-                        self.builder.ins().fdiv(num_im, denom),
+                        self.builder.ins().fdiv(num_re, denom_safe),
+                        self.builder.ins().fdiv(num_im, denom_safe),
                     )
                 }
             };
@@ -995,15 +1131,26 @@ impl<'a> FunctionTranslator<'a> {
                     let c2 = self.builder.ins().fmul(r_re, r_re);
                     let d2 = self.builder.ins().fmul(r_im, r_im);
                     let denom = self.builder.ins().fadd(c2, d2);
+
+                    // 检测 denom 是否为 0 (复数除数为零)
+                    let zero = self.builder.ins().f64const(0.0);
+                    let denom_is_zero = self.builder.ins().fcmp(FloatCC::Equal, denom, zero);
+
+                    // 计算分子: (ac+bd) + i(bc-ad)
                     let ac = self.builder.ins().fmul(l_re, r_re);
                     let bd = self.builder.ins().fmul(l_im, r_im);
                     let num_re = self.builder.ins().fadd(ac, bd);
                     let bc = self.builder.ins().fmul(l_im, r_re);
                     let ad = self.builder.ins().fmul(l_re, r_im);
                     let num_im = self.builder.ins().fsub(bc, ad);
+
+                    // 如果 denom 为 0，替换为 1 避免除零
+                    let one_f64 = self.builder.ins().f64const(1.0);
+                    let denom_safe = self.builder.ins().select(denom_is_zero, one_f64, denom);
+
                     (
-                        self.builder.ins().fdiv(num_re, denom),
-                        self.builder.ins().fdiv(num_im, denom),
+                        self.builder.ins().fdiv(num_re, denom_safe),
+                        self.builder.ins().fdiv(num_im, denom_safe),
                     )
                 }
             };

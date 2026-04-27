@@ -12,6 +12,12 @@ pub struct TypeChecker {
     pub functions: HashMap<String, FunctionSignature>,
 }
 
+impl Default for TypeChecker {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl TypeChecker {
     pub fn new() -> Self {
         let mut tc = TypeChecker {
@@ -134,6 +140,114 @@ impl TypeChecker {
             },
         );
 
+        // F64 DynamicArray methods
+        self.functions.insert(
+            "array_new_f64".to_string(),
+            FunctionSignature {
+                params: vec![],
+                ret: Type::DynamicArray(Box::new(Type::F64)),
+                is_external: true,
+            },
+        );
+        self.functions.insert(
+            "array_push_f64".to_string(),
+            FunctionSignature {
+                params: vec![Type::DynamicArray(Box::new(Type::F64)), Type::F64],
+                ret: Type::I64,
+                is_external: true,
+            },
+        );
+        self.functions.insert(
+            "array_pop_f64".to_string(),
+            FunctionSignature {
+                params: vec![Type::DynamicArray(Box::new(Type::F64))],
+                ret: Type::F64,
+                is_external: true,
+            },
+        );
+        self.functions.insert(
+            "array_len_f64".to_string(),
+            FunctionSignature {
+                params: vec![Type::DynamicArray(Box::new(Type::F64))],
+                ret: Type::I64,
+                is_external: true,
+            },
+        );
+        self.functions.insert(
+            "array_cap_f64".to_string(),
+            FunctionSignature {
+                params: vec![Type::DynamicArray(Box::new(Type::F64))],
+                ret: Type::I64,
+                is_external: true,
+            },
+        );
+        self.functions.insert(
+            "array_set_f64".to_string(),
+            FunctionSignature {
+                params: vec![
+                    Type::DynamicArray(Box::new(Type::F64)),
+                    Type::I64,
+                    Type::F64,
+                ],
+                ret: Type::I64,
+                is_external: true,
+            },
+        );
+
+        // Complex128 DynamicArray methods
+        self.functions.insert(
+            "array_new_complex128".to_string(),
+            FunctionSignature {
+                params: vec![],
+                ret: Type::DynamicArray(Box::new(Type::Complex128)),
+                is_external: true,
+            },
+        );
+        self.functions.insert(
+            "array_push_complex128".to_string(),
+            FunctionSignature {
+                params: vec![Type::DynamicArray(Box::new(Type::Complex128)), Type::Complex128],
+                ret: Type::I64,
+                is_external: true,
+            },
+        );
+        self.functions.insert(
+            "array_pop_complex128".to_string(),
+            FunctionSignature {
+                params: vec![Type::DynamicArray(Box::new(Type::Complex128))],
+                ret: Type::Complex128,
+                is_external: true,
+            },
+        );
+        self.functions.insert(
+            "array_len_complex128".to_string(),
+            FunctionSignature {
+                params: vec![Type::DynamicArray(Box::new(Type::Complex128))],
+                ret: Type::I64,
+                is_external: true,
+            },
+        );
+        self.functions.insert(
+            "array_cap_complex128".to_string(),
+            FunctionSignature {
+                params: vec![Type::DynamicArray(Box::new(Type::Complex128))],
+                ret: Type::I64,
+                is_external: true,
+            },
+        );
+        self.functions.insert(
+            "array_set_complex128".to_string(),
+            FunctionSignature {
+                params: vec![
+                    Type::DynamicArray(Box::new(Type::Complex128)),
+                    Type::I64,
+                    Type::Complex128,
+                ],
+                ret: Type::I64,
+                is_external: true,
+            },
+        );
+
         // Register toy_mkl_dgemm
         // fn toy_mkl_dgemm(
         //     m: i64, n: i64, k: i64,
@@ -206,14 +320,32 @@ pub fn infer_type(expr: &Expr, get_var_type: &impl Fn(&str) -> Option<Type>) -> 
         }
         Expr::Identifier(name) => get_var_type(name).unwrap_or(Type::I64),
         Expr::Call(name, _) => {
-            if name == "array_len"
-                || name == "array_cap"
-                || name == "array_pop"
-                || name == "array_push"
-            {
-                Type::I64
-            } else {
-                Type::I64
+            // 查表获取函数返回类型，而不是硬编码
+            match name.as_str() {
+                // 数学函数 -> F64
+                "sin" | "cos" | "tan" | "sqrt" | "exp" | "log" | "ceil" | "floor" | "pow" => {
+                    Type::F64
+                }
+                // IO 函数
+                "putchar" | "rand" | "printf" | "puts" | "toy_sum_array" => Type::I64,
+                "print_f64" => Type::F64,
+                "print_i64" => Type::I64,
+                // toy_mkl_dgemm 返回 i64 (错误码)
+                "toy_mkl_dgemm" => Type::I64,
+                // i64 动态数组方法 -> I64
+                "array_push" | "array_pop" | "array_len" | "array_cap" | "array_set" => Type::I64,
+                // i64 动态数组构造函数
+                "array_new_i64" => Type::DynamicArray(Box::new(Type::I64)),
+                // f64 动态数组方法
+                "array_new_f64" => Type::DynamicArray(Box::new(Type::F64)),
+                "array_push_f64" | "array_len_f64" | "array_cap_f64" | "array_set_f64" => Type::I64,
+                "array_pop_f64" => Type::F64,
+                // complex128 动态数组方法
+                "array_new_complex128" => Type::DynamicArray(Box::new(Type::Complex128)),
+                "array_push_complex128" | "array_len_complex128" | "array_cap_complex128" | "array_set_complex128" => Type::I64,
+                "array_pop_complex128" => Type::Complex128,
+                // 未知函数默认返回 I64
+                _ => Type::I64,
             }
         }
         Expr::Index(base, _) => match infer_type(base, get_var_type) {
@@ -231,5 +363,6 @@ pub fn infer_type(expr: &Expr, get_var_type: &impl Fn(&str) -> Option<Type>) -> 
         }
         Expr::WhileLoop(_, _) => Type::I64,
         Expr::GlobalDataAddr(_) => Type::I64, // Pointer
+        Expr::Drop(_) => Type::I64, // drop() 不返回有用值
     }
 }

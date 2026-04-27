@@ -24,6 +24,7 @@ pub enum Expr {
     Index(Box<Expr>, Box<Expr>), // Array indexing
     GlobalDataAddr(String),
     Cast(Box<Expr>, Type),
+    Drop(String),  // drop(variable_name) - 显式释放 DynamicArray
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -32,6 +33,8 @@ pub enum Type {
     I16,
     I32,
     I64,
+    // I128: 当前实现不完整，字面量会被截断为 i64。
+    // 完整的 i128 支持需要使用两个 i64 拼接实现。
     I128,
     F32,
     F64,
@@ -105,6 +108,7 @@ peg::parser!(pub grammar parser() for str {
     rule expression() -> Expr
         = if_else()
         / while_loop()
+        / "drop" _ "(" _ i:identifier() _ ")" { Expr::Drop(i) }
         / assignment()          //表示赋值语句，例如 a = 1
         / binary_op()           //表示二元操作符，例如 a + b 或 a * b
 
