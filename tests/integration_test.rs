@@ -56,9 +56,23 @@ fn test_mkl_dgemm() {
     let mut c = [0.0f64; 4];
     func(c.as_mut_ptr());
 
-    println!("Resulting matrix C: {:?}", c);
     assert_eq!(c[0], 19.0);
     assert_eq!(c[1], 22.0);
     assert_eq!(c[2], 43.0);
     assert_eq!(c[3], 50.0);
+}
+
+#[test]
+fn test_signed_division() {
+    let mut jit = JIT::default();
+    let code = r#"
+    fn test_sdiv(a: i64, b: i64) -> (r: i64) {
+        r = a / b
+    }
+    "#;
+    let func_ptr = jit.compile(code).unwrap();
+    let func: fn(i64, i64) -> i64 = unsafe { std::mem::transmute(func_ptr) };
+    assert_eq!(func(-10, 3), -3);
+    assert_eq!(func(10, -3), -3);
+    assert_eq!(func(-10, -3), 3);
 }

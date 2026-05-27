@@ -6,8 +6,7 @@ use std::mem;
 use std::path::Path;
 
 fn main() -> Result<()> {
-    let cli = Cli::parse_args();
-
+    let cli = Cli::parse_args(); //调用Self::parse()，底层库是clap，RUST主流的命令行参数解析库，根据 struct 的字段和 #[arg] 属性：获得脚本路径、是否运行测试等信息。
     if cli.test {
         println!("Running integration tests...");
         run_all_tests().context("Integration tests failed")?;
@@ -387,5 +386,6 @@ fn dynamic_array_test() -> (r: i64) {
     arr = array [10, 20, 30]
     array_push(arr, 40)
     r = arr[3]
+    drop(arr)
 }
 "#;

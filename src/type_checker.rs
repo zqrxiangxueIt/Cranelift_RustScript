@@ -206,7 +206,10 @@ impl TypeChecker {
         self.functions.insert(
             "array_push_complex128".to_string(),
             FunctionSignature {
-                params: vec![Type::DynamicArray(Box::new(Type::Complex128)), Type::Complex128],
+                params: vec![
+                    Type::DynamicArray(Box::new(Type::Complex128)),
+                    Type::Complex128,
+                ],
                 ret: Type::I64,
                 is_external: true,
             },
@@ -342,7 +345,10 @@ pub fn infer_type(expr: &Expr, get_var_type: &impl Fn(&str) -> Option<Type>) -> 
                 "array_pop_f64" => Type::F64,
                 // complex128 动态数组方法
                 "array_new_complex128" => Type::DynamicArray(Box::new(Type::Complex128)),
-                "array_push_complex128" | "array_len_complex128" | "array_cap_complex128" | "array_set_complex128" => Type::I64,
+                "array_push_complex128"
+                | "array_len_complex128"
+                | "array_cap_complex128"
+                | "array_set_complex128" => Type::I64,
                 "array_pop_complex128" => Type::Complex128,
                 // 未知函数默认返回 I64
                 _ => Type::I64,
@@ -363,6 +369,6 @@ pub fn infer_type(expr: &Expr, get_var_type: &impl Fn(&str) -> Option<Type>) -> 
         }
         Expr::WhileLoop(_, _) => Type::I64,
         Expr::GlobalDataAddr(_) => Type::I64, // Pointer
-        Expr::Drop(_) => Type::I64, // drop() 不返回有用值
+        Expr::Drop(_) => Type::I64,           // drop() 不返回有用值
     }
 }

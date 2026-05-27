@@ -76,9 +76,7 @@ impl JIT {
             let mut checker = ownership::OwnershipChecker::new();
             let errors = checker.analyze_function(&params, &stmts, &the_return.0);
             if !errors.is_empty() {
-                let error_msgs: Vec<String> = errors.iter()
-                    .map(|e| e.to_string())
-                    .collect();
+                let error_msgs: Vec<String> = errors.iter().map(|e| e.to_string()).collect();
                 return Err(format!("ownership errors:\n{}", error_msgs.join("\n")));
             }
         }
@@ -208,10 +206,12 @@ impl JIT {
             // 从 DynamicArray<Type> 中提取元素类型
             if let FrontendType::DynamicArray(elem_ty) = arr_ty {
                 let drop_func_name = match elem_ty.as_ref() {
-                    FrontendType::I64 | FrontendType::I32 | FrontendType::I16 | FrontendType::I8 => "array_drop",
+                    FrontendType::I64 => "array_drop",
+                    // i32/i16/i8 DynamicArray 在运行时暂不支持，其 drop 与 I64 共用
+                    // 因为当前语法仅生成 I64/F64/Complex128 的 DynamicArray
                     FrontendType::F64 => "array_drop_f64",
                     FrontendType::Complex128 => "array_drop_complex128",
-                    _ => "array_drop", // 默认使用 i64 版本
+                    _ => "array_drop",
                 };
 
                 let mut drop_sig = trans.module.make_signature();
@@ -275,7 +275,7 @@ struct FunctionTranslator<'a> {
     string_counter: usize,
     type_checker: &'a TypeChecker,
     dynamic_arrays: Vec<(Variable, FrontendType)>, // (variable, element_type)
-    explicitly_dropped: Vec<Variable>, // 已显式 drop 的数组，不再自动 drop
+    explicitly_dropped: Vec<Variable>,             // 已显式 drop 的数组，不再自动 drop
 }
 
 impl<'a> FunctionTranslator<'a> {
@@ -287,13 +287,16 @@ impl<'a> FunctionTranslator<'a> {
                 let cl_ty: types::Type = to_cranelift_type(&ty);
                 match ty {
                     FrontendType::F32 => self.builder.ins().f32const(
-                        val.parse::<f32>().expect(&format!("Invalid f32 literal: {}", val))
+                        val.parse::<f32>()
+                            .expect(&format!("Invalid f32 literal: {}", val)),
                     ),
                     FrontendType::F64 => self.builder.ins().f64const(
-                        val.parse::<f64>().expect(&format!("Invalid f64 literal: {}", val))
+                        val.parse::<f64>()
+                            .expect(&format!("Invalid f64 literal: {}", val)),
                     ),
                     _ => {
-                        let int_val = val.parse::<i128>()
+                        let int_val = val
+                            .parse::<i128>()
                             .expect(&format!("Invalid integer literal: {}", val));
                         if cl_ty == types::I128 {
                             // 将 i128 分解为两个 i64: 低位和高位
@@ -305,12 +308,14 @@ impl<'a> FunctionTranslator<'a> {
                             let ss = self.builder.create_sized_stack_slot(StackSlotData::new(
                                 StackSlotKind::ExplicitSlot,
                                 16,
-                                8, // 8 字节对齐
+                                4, // 2^4 = 16 bytes alignment
                             ));
 
                             // 将低 64 位存储在偏移 0，高 64 位存储在偏移 8
-                            let low_val = InstBuilder::iconst(self.builder.ins(), types::I64, low_bits);
-                            let high_val = InstBuilder::iconst(self.builder.ins(), types::I64, high_bits);
+                            let low_val =
+                                InstBuilder::iconst(self.builder.ins(), types::I64, low_bits);
+                            let high_val =
+                                InstBuilder::iconst(self.builder.ins(), types::I64, high_bits);
                             self.builder.ins().stack_store(low_val, ss, 0);
                             self.builder.ins().stack_store(high_val, ss, 8);
 
@@ -386,7 +391,7 @@ impl<'a> FunctionTranslator<'a> {
                         if ty.is_float() {
                             b.ins().fdiv(l, r)
                         } else {
-                            b.ins().udiv(l, r)
+                            b.ins().sdiv(l, r)
                         }
                     })
                 }
@@ -437,9 +442,7 @@ impl<'a> FunctionTranslator<'a> {
                 let val = self.translate_expr(*expr);
                 self.translate_cast(val, to_cranelift_type(&target_ty))
             }
-            Expr::Drop(name) => {
-                self.translate_drop(&name)
-            }
+            Expr::Drop(name) => self.translate_drop(&name),
         }
     }
 
@@ -545,8 +548,10 @@ impl<'a> FunctionTranslator<'a> {
     fn translate_assign(&mut self, name: String, expr: Expr) -> Value {
         let new_value = self.translate_expr(expr);
         let (variable, ty) = {
-            let (v, t) = self.variables.get(&name)
-                .expect(&format!("Variable '{}' not found - compiler bug in variable declaration", name));
+            let (v, t) = self.variables.get(&name).expect(&format!(
+                "Variable '{}' not found - compiler bug in variable declaration",
+                name
+            ));
             (*v, t.clone())
         };
 
@@ -573,7 +578,9 @@ impl<'a> FunctionTranslator<'a> {
     /// 处理 drop() 显式释放
     fn translate_drop(&mut self, name: &str) -> Value {
         // 获取变量
-        let (var, arr_ty) = self.variables.get(name)
+        let (var, arr_ty) = self
+            .variables
+            .get(name)
             .expect(&format!("Variable '{}' not found for drop()", name));
 
         // 标记为已显式 drop
@@ -586,19 +593,21 @@ impl<'a> FunctionTranslator<'a> {
         };
 
         let drop_func_name = match elem_ty {
-            FrontendType::I64 | FrontendType::I32 | FrontendType::I16 | FrontendType::I8 => "array_drop",
+            FrontendType::I64 => "array_drop",
             FrontendType::F64 => "array_drop_f64",
             FrontendType::Complex128 => "array_drop_complex128",
-            _ => "array_drop", // 默认
+            _ => "array_drop",
         };
 
         let mut drop_sig = self.module.make_signature();
         drop_sig.params.push(AbiParam::new(types::I64));
         drop_sig.returns.push(AbiParam::new(types::I64));
-        let drop_callee = self.module
+        let drop_callee = self
+            .module
             .declare_function(drop_func_name, Linkage::Import, &drop_sig)
             .unwrap();
-        let drop_local_callee = self.module
+        let drop_local_callee = self
+            .module
             .declare_func_in_func(drop_callee, self.builder.func);
 
         let val = self.builder.use_var(*var);
@@ -692,8 +701,37 @@ impl<'a> FunctionTranslator<'a> {
         InstBuilder::iconst(self.builder.ins(), types::I64, 0)
     }
 
+    /// 将泛型 DynamicArray 函数名按元素类型分发到具体实现
+    fn dispatch_array_fn(&self, name: String, args: &[Expr]) -> String {
+        // 只处理泛型名称（无后缀的）
+        let base = match name.as_str() {
+            "array_push" | "array_pop" | "array_len" | "array_cap" | "array_set"
+            | "array_get_ptr" | "array_drop" => name.as_str(),
+            _ => return name,
+        };
+        if args.is_empty() {
+            return name;
+        }
+        let arg_ty =
+            type_checker::infer_type(&args[0], &|n| self.variables.get(n).map(|(_, t)| t.clone()));
+        if let FrontendType::DynamicArray(elem_ty) = arg_ty {
+            let suffix = match elem_ty.as_ref() {
+                FrontendType::F64 => "_f64",
+                FrontendType::Complex128 => "_complex128",
+                _ => "",
+            };
+            if !suffix.is_empty() {
+                return format!("{}{}", base, suffix);
+            }
+        }
+        name
+    }
+
     /// 函数调用
     fn translate_call(&mut self, name: String, args: Vec<Expr>) -> Value {
+        // 对泛型 DynamicArray 函数按元素类型分发
+        let name = self.dispatch_array_fn(name, &args);
+
         let mut sig = self.module.make_signature();
 
         let signature = self.type_checker.resolve_func(&name);
@@ -863,7 +901,9 @@ impl<'a> FunctionTranslator<'a> {
         // ty 可能是 DynamicArray(inner) 或直接是元素类型 (I64, F64 等)
         let elem_ty = match &ty {
             FrontendType::DynamicArray(inner) => *inner.clone(),
-            FrontendType::I64 | FrontendType::I32 | FrontendType::I16 | FrontendType::I8 => ty.clone(),
+            FrontendType::I64 | FrontendType::I32 | FrontendType::I16 | FrontendType::I8 => {
+                ty.clone()
+            }
             FrontendType::F64 | FrontendType::F32 => ty.clone(),
             FrontendType::Complex128 | FrontendType::Complex64 => ty.clone(),
             _ => panic!("Unexpected type for dynamic array literal: {:?}", ty),
@@ -873,7 +913,9 @@ impl<'a> FunctionTranslator<'a> {
         let (new_fn, push_fn, cl_elem_ty) = match elem_ty {
             FrontendType::I64 => ("array_new_i64", "array_push", types::I64),
             FrontendType::F64 => ("array_new_f64", "array_push_f64", types::F64),
-            FrontendType::Complex128 => ("array_new_complex128", "array_push_complex128", types::I128),
+            FrontendType::Complex128 => {
+                ("array_new_complex128", "array_push_complex128", types::I128)
+            }
             _ => panic!("Unsupported dynamic array element type: {:?}", elem_ty),
         };
 
@@ -944,7 +986,10 @@ impl<'a> FunctionTranslator<'a> {
                 FrontendType::I64 => "array_get_ptr",
                 FrontendType::F64 => "array_get_ptr_f64",
                 FrontendType::Complex128 => "array_get_ptr_complex128",
-                _ => panic!("Unsupported dynamic array element type for index: {:?}", elem_ty),
+                _ => panic!(
+                    "Unsupported dynamic array element type for index: {:?}",
+                    elem_ty
+                ),
             };
 
             let mut sig = self.module.make_signature();

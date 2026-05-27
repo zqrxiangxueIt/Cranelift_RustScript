@@ -44,6 +44,7 @@ fn bench_dynamic_array(c: &mut Criterion) {
             i = i + 1
         }
         r = array_len(arr)
+        drop(arr)
     }
     "#;
     let func_ptr = jit.compile(code).unwrap();

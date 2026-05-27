@@ -19,12 +19,12 @@ pub fn fold_constants(expr: Expr) -> Expr {
         Expr::Div(lhs, rhs) => fold_binary_op(*lhs, *rhs, OpType::Div, |a, b| a / b),
 
         // 比较运算
-        Expr::Eq(lhs, rhs) => fold_cmp(*lhs, *rhs, |a, b| a == b),
-        Expr::Ne(lhs, rhs) => fold_cmp(*lhs, *rhs, |a, b| a != b),
-        Expr::Lt(lhs, rhs) => fold_cmp(*lhs, *rhs, |a, b| a < b),
-        Expr::Le(lhs, rhs) => fold_cmp(*lhs, *rhs, |a, b| a <= b),
-        Expr::Gt(lhs, rhs) => fold_cmp(*lhs, *rhs, |a, b| a > b),
-        Expr::Ge(lhs, rhs) => fold_cmp(*lhs, *rhs, |a, b| a >= b),
+        Expr::Eq(lhs, rhs) => fold_cmp(*lhs, *rhs, |a, b| a == b, Expr::Eq),
+        Expr::Ne(lhs, rhs) => fold_cmp(*lhs, *rhs, |a, b| a != b, Expr::Ne),
+        Expr::Lt(lhs, rhs) => fold_cmp(*lhs, *rhs, |a, b| a < b, Expr::Lt),
+        Expr::Le(lhs, rhs) => fold_cmp(*lhs, *rhs, |a, b| a <= b, Expr::Le),
+        Expr::Gt(lhs, rhs) => fold_cmp(*lhs, *rhs, |a, b| a > b, Expr::Gt),
+        Expr::Ge(lhs, rhs) => fold_cmp(*lhs, *rhs, |a, b| a >= b, Expr::Ge),
 
         // 赋值语句
         Expr::Assign(name, val) => Expr::Assign(name, Box::new(fold_constants(*val))),
@@ -43,10 +43,7 @@ pub fn fold_constants(expr: Expr) -> Expr {
         ),
 
         // 函数调用 - 递归处理参数
-        Expr::Call(name, args) => Expr::Call(
-            name,
-            args.into_iter().map(fold_constants).collect(),
-        ),
+        Expr::Call(name, args) => Expr::Call(name, args.into_iter().map(fold_constants).collect()),
 
         // 数组索引
         Expr::Index(base, idx) => Expr::Index(
@@ -63,12 +60,7 @@ pub fn fold_constants(expr: Expr) -> Expr {
 }
 
 /// 二元运算常量折叠
-fn fold_binary_op<F>(
-    lhs: Expr,
-    rhs: Expr,
-    op_type: OpType,
-    int_op: F,
-) -> Expr
+fn fold_binary_op<F>(lhs: Expr, rhs: Expr, op_type: OpType, int_op: F) -> Expr
 where
     F: Fn(i64, i64) -> i64,
 {
@@ -200,9 +192,10 @@ where
 }
 
 /// 比较运算常量折叠
-fn fold_cmp<F>(lhs: Expr, rhs: Expr, cmp: F) -> Expr
+fn fold_cmp<F, G>(lhs: Expr, rhs: Expr, cmp: F, default: G) -> Expr
 where
     F: Fn(i64, i64) -> bool,
+    G: Fn(Box<Expr>, Box<Expr>) -> Expr,
 {
     let lhs = Box::new(fold_constants(lhs));
     let rhs = Box::new(fold_constants(rhs));
@@ -225,12 +218,12 @@ where
                 let result = cmp(a, b);
                 Expr::Literal((if result { 1 } else { 0 }).to_string(), Type::I64)
             } else {
-                Expr::Eq(lhs, rhs)
+                default(lhs, rhs)
             }
         }
 
-        // 无法折叠
-        _ => Expr::Eq(lhs, rhs),
+        // 无法折叠，保持原始比较运算符
+        _ => default(lhs, rhs),
     }
 }
 
@@ -371,5 +364,64 @@ mod tests {
         );
         let result = fold_constants(expr);
         assert_eq!(result, Expr::Literal("10".to_string(), Type::I64));
+    }
+
+    #[test]
+    fn test_fold_cmp_preserves_operator() {
+        // 非聚友比较运算: x < y 不能变成 x == y
+        let expr = Expr::Lt(
+            Box::new(Expr::Identifier("x".to_string())),
+            Box::new(Expr::Identifier("y".to_string())),
+        );
+        let result = fold_constants(expr);
+        assert!(
+            matches!(result, Expr::Lt(..)),
+            "Lt should stay Lt, got {:?}",
+            result
+        );
+
+        let expr = Expr::Ne(
+            Box::new(Expr::Identifier("x".to_string())),
+            Box::new(Expr::Identifier("y".to_string())),
+        );
+        let result = fold_constants(expr);
+        assert!(
+            matches!(result, Expr::Ne(..)),
+            "Ne should stay Ne, got {:?}",
+            result
+        );
+
+        let expr = Expr::Le(
+            Box::new(Expr::Identifier("x".to_string())),
+            Box::new(Expr::Identifier("y".to_string())),
+        );
+        let result = fold_constants(expr);
+        assert!(
+            matches!(result, Expr::Le(..)),
+            "Le should stay Le, got {:?}",
+            result
+        );
+
+        let expr = Expr::Gt(
+            Box::new(Expr::Identifier("x".to_string())),
+            Box::new(Expr::Identifier("y".to_string())),
+        );
+        let result = fold_constants(expr);
+        assert!(
+            matches!(result, Expr::Gt(..)),
+            "Gt should stay Gt, got {:?}",
+            result
+        );
+
+        let expr = Expr::Ge(
+            Box::new(Expr::Identifier("x".to_string())),
+            Box::new(Expr::Identifier("y".to_string())),
+        );
+        let result = fold_constants(expr);
+        assert!(
+            matches!(result, Expr::Ge(..)),
+            "Ge should stay Ge, got {:?}",
+            result
+        );
     }
 }

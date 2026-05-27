@@ -51,17 +51,38 @@ pub fn register_builtins(builder: &mut JITBuilder) {
     builder.symbol("array_drop_f64", array::dynamic_array_drop_f64 as *const u8);
 
     // DynamicArray symbols for complex128
-    builder.symbol("array_new_complex128", array::dynamic_array_new_complex128 as *const u8);
-    builder.symbol("array_push_complex128", array::dynamic_array_push_complex128 as *const u8);
-    builder.symbol("array_pop_complex128", array::dynamic_array_pop_complex128 as *const u8);
-    builder.symbol("array_len_complex128", array::dynamic_array_len_complex128 as *const u8);
-    builder.symbol("array_cap_complex128", array::dynamic_array_cap_complex128 as *const u8);
+    builder.symbol(
+        "array_new_complex128",
+        array::dynamic_array_new_complex128 as *const u8,
+    );
+    builder.symbol(
+        "array_push_complex128",
+        array::dynamic_array_push_complex128 as *const u8,
+    );
+    builder.symbol(
+        "array_pop_complex128",
+        array::dynamic_array_pop_complex128 as *const u8,
+    );
+    builder.symbol(
+        "array_len_complex128",
+        array::dynamic_array_len_complex128 as *const u8,
+    );
+    builder.symbol(
+        "array_cap_complex128",
+        array::dynamic_array_cap_complex128 as *const u8,
+    );
     builder.symbol(
         "array_get_ptr_complex128",
         array::dynamic_array_get_ptr_complex128 as *const u8,
     );
-    builder.symbol("array_set_complex128", array::array_set_complex128 as *const u8);
-    builder.symbol("array_drop_complex128", array::dynamic_array_drop_complex128 as *const u8);
+    builder.symbol(
+        "array_set_complex128",
+        array::array_set_complex128 as *const u8,
+    );
+    builder.symbol(
+        "array_drop_complex128",
+        array::dynamic_array_drop_complex128 as *const u8,
+    );
 
     // Register math functions
     builder.symbol("sin", math::toy_sin as *const u8);

@@ -1,30 +1,30 @@
-/// The AST node for expressions.
+/// AST 节点 — 表达式
 #[derive(Debug, Clone, PartialEq)]
 pub enum Expr {
-    Literal(String, Type), // Value, Type (Integer or Float)
-    StringLiteral(String),
-    ComplexLiteral(f64, f64, Type), // Real, Imag, Type (Complex64 or Complex128)
-    ArrayLiteral(Vec<Expr>, Type),
-    DynamicArrayLiteral(Vec<Expr>, Type),
-    Identifier(String),
-    Assign(String, Box<Expr>),
-    Eq(Box<Expr>, Box<Expr>),
-    Ne(Box<Expr>, Box<Expr>),
-    Lt(Box<Expr>, Box<Expr>),
-    Le(Box<Expr>, Box<Expr>),
-    Gt(Box<Expr>, Box<Expr>),
-    Ge(Box<Expr>, Box<Expr>),
-    Add(Box<Expr>, Box<Expr>),
-    Sub(Box<Expr>, Box<Expr>),
-    Mul(Box<Expr>, Box<Expr>),
-    Div(Box<Expr>, Box<Expr>),
-    IfElse(Box<Expr>, Vec<Expr>, Vec<Expr>),
-    WhileLoop(Box<Expr>, Vec<Expr>),
-    Call(String, Vec<Expr>),
-    Index(Box<Expr>, Box<Expr>), // Array indexing
-    GlobalDataAddr(String),
-    Cast(Box<Expr>, Type),
-    Drop(String),  // drop(variable_name) - 显式释放 DynamicArray
+    Literal(String, Type),                   // 字面量 "42", "3.14" + 类型
+    StringLiteral(String),                   // "hello" 字符串
+    ComplexLiteral(f64, f64, Type),          // 1.5 + 2.5i (实部, 虚部, 类型)
+    ArrayLiteral(Vec<Expr>, Type),           // [1, 2, 3] 固定数组
+    DynamicArrayLiteral(Vec<Expr>, Type),    // array [1, 2, 3] 动态数组
+    Identifier(String),                      // 变量名
+    Assign(String, Box<Expr>),               // x = expr
+    Eq(Box<Expr>, Box<Expr>),                // ==
+    Ne(Box<Expr>, Box<Expr>),                // !=
+    Lt(Box<Expr>, Box<Expr>),                // <
+    Le(Box<Expr>, Box<Expr>),                // <=
+    Gt(Box<Expr>, Box<Expr>),                // >
+    Ge(Box<Expr>, Box<Expr>),                // >=
+    Add(Box<Expr>, Box<Expr>),               // +
+    Sub(Box<Expr>, Box<Expr>),               // -
+    Mul(Box<Expr>, Box<Expr>),               // *
+    Div(Box<Expr>, Box<Expr>),               // /
+    IfElse(Box<Expr>, Vec<Expr>, Vec<Expr>), // if-else
+    WhileLoop(Box<Expr>, Vec<Expr>),         // while 循环
+    Call(String, Vec<Expr>),                 // 函数调用
+    Index(Box<Expr>, Box<Expr>),             // arr[idx] 索引
+    GlobalDataAddr(String),                  // &name 全局数据地址
+    Cast(Box<Expr>, Type),                   // expr as Type
+    Drop(String),                            // drop(var) 显式释放
 }
 
 #[derive(Debug, Clone, PartialEq)]

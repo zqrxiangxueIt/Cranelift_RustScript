@@ -10,10 +10,7 @@ pub extern "C" fn dynamic_array_new_i64() -> *mut DynamicArray<i64> {
 
 /// Push an element to the dynamic array
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn dynamic_array_push_i64(
-    arr_ptr: *mut DynamicArray<i64>,
-    elem: i64,
-) -> i64 {
+pub unsafe extern "C" fn dynamic_array_push_i64(arr_ptr: *mut DynamicArray<i64>, elem: i64) -> i64 {
     let arr = unsafe { &mut *arr_ptr };
     arr.push(elem);
     0
@@ -74,7 +71,9 @@ pub unsafe extern "C" fn array_set(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn dynamic_array_drop_i64(arr_ptr: *mut DynamicArray<i64>) -> i64 {
     if !arr_ptr.is_null() {
-        unsafe { let _ = Box::from_raw(arr_ptr); }
+        unsafe {
+            let _ = Box::from_raw(arr_ptr);
+        }
     }
     0
 }
@@ -92,10 +91,7 @@ pub extern "C" fn dynamic_array_new_f64() -> *mut DynamicArray<f64> {
 
 /// Push an element to the dynamic array
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn dynamic_array_push_f64(
-    arr_ptr: *mut DynamicArray<f64>,
-    elem: f64,
-) -> i64 {
+pub unsafe extern "C" fn dynamic_array_push_f64(arr_ptr: *mut DynamicArray<f64>, elem: f64) -> i64 {
     let arr = unsafe { &mut *arr_ptr };
     arr.push(elem);
     0
@@ -155,7 +151,9 @@ pub unsafe extern "C" fn array_set_f64(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn dynamic_array_drop_f64(arr_ptr: *mut DynamicArray<f64>) -> i64 {
     if !arr_ptr.is_null() {
-        unsafe { let _ = Box::from_raw(arr_ptr); }
+        unsafe {
+            let _ = Box::from_raw(arr_ptr);
+        }
     }
     0
 }
@@ -236,7 +234,9 @@ pub unsafe extern "C" fn array_set_complex128(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn dynamic_array_drop_complex128(arr_ptr: *mut DynamicArray<i128>) -> i64 {
     if !arr_ptr.is_null() {
-        unsafe { let _ = Box::from_raw(arr_ptr); }
+        unsafe {
+            let _ = Box::from_raw(arr_ptr);
+        }
     }
     0
 }
