@@ -1,3 +1,4 @@
+#![allow(clippy::missing_safety_doc)]
 use libc::c_double;
 
 #[unsafe(no_mangle)]

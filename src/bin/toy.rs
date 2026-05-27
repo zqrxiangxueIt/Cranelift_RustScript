@@ -1,3 +1,4 @@
+#![allow(clippy::missing_transmute_annotations)]
 use anyhow::{Context, Result, anyhow};
 use cranelift_jit_demo::cli::Cli;
 use cranelift_jit_demo::jit;
@@ -239,7 +240,7 @@ fn run_complex_test(jit: &mut jit::JIT) -> Result<i64, String> {
         if result == 1 {
             Ok(result)
         } else {
-            Err(format!("Complex test failed"))
+            Err("Complex test failed".to_string())
         }
     }
 }

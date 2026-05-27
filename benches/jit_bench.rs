@@ -1,6 +1,7 @@
 use cranelift_jit_demo::jit::JIT;
-use criterion::{Criterion, black_box, criterion_group, criterion_main};
+use criterion::{Criterion, criterion_group, criterion_main};
 use raii_demo::DynamicArray;
+use std::hint::black_box;
 
 fn bench_math(c: &mut Criterion) {
     let mut jit = JIT::default();
@@ -30,7 +31,7 @@ fn bench_array_sum(c: &mut Criterion) {
     let func_ptr = jit.compile(code).unwrap();
     let func: fn() -> f64 = unsafe { std::mem::transmute(func_ptr) };
 
-    c.bench_function("jit_sum_array", |b| b.iter(|| func()));
+    c.bench_function("jit_sum_array", |b| b.iter(|| black_box(func())));
 }
 
 fn bench_dynamic_array(c: &mut Criterion) {
@@ -50,7 +51,7 @@ fn bench_dynamic_array(c: &mut Criterion) {
     let func_ptr = jit.compile(code).unwrap();
     let func: fn() -> i64 = unsafe { std::mem::transmute(func_ptr) };
 
-    c.bench_function("jit_dynamic_array", |b| b.iter(|| func()));
+    c.bench_function("jit_dynamic_array", |b| b.iter(|| black_box(func())));
 }
 
 fn bench_native_dynamic_array(c: &mut Criterion) {

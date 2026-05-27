@@ -167,22 +167,23 @@ where
 
         // 两个整数常量
         (Expr::Literal(v1, Type::I64), Expr::Literal(v2, Type::I64)) => {
-            if let (Ok(a), Ok(b)) = (v1.parse::<i64>(), v2.parse::<i64>()) {
-                if b != 0 {
-                    let result = int_op(a, b);
-                    return Expr::Literal(result.to_string(), Type::I64);
-                }
+            if let (Ok(a), Ok(b)) = (v1.parse::<i64>(), v2.parse::<i64>())
+                && b != 0
+            {
+                let result = int_op(a, b);
+                return Expr::Literal(result.to_string(), Type::I64);
             }
             Expr::Div(lhs, rhs)
         }
 
         // 两个浮点常量
         (Expr::Literal(v1, Type::F64), Expr::Literal(v2, Type::F64)) => {
-            if let (Ok(a), Ok(b)) = (v1.parse::<f64>(), v2.parse::<f64>()) {
-                if b != 0.0 && !b.is_nan() {
-                    let result = a / b;
-                    return Expr::Literal(result.to_string(), Type::F64);
-                }
+            if let (Ok(a), Ok(b)) = (v1.parse::<f64>(), v2.parse::<f64>())
+                && b != 0.0
+                && !b.is_nan()
+            {
+                let result = a / b;
+                return Expr::Literal(result.to_string(), Type::F64);
             }
             Expr::Div(lhs, rhs)
         }
@@ -209,7 +210,7 @@ where
             // 比较运算结果是 i64 (0 或 1)
             let result = cmp(0, 0); // 用 0,0 调用 cmp 来获取默认值
             let val = if result { 1 } else { 0 };
-            return Expr::Literal(val.to_string(), Type::I64);
+            Expr::Literal(val.to_string(), Type::I64)
         }
 
         // 两个整数常量: 折叠

@@ -1,3 +1,4 @@
+#![allow(clippy::missing_safety_doc)]
 use raii_demo::DynamicArray;
 use std::ptr;
 

@@ -1,3 +1,4 @@
+#![allow(clippy::missing_safety_doc)]
 use rand::Rng;
 use std::slice;
 

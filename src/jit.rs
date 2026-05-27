@@ -288,16 +288,16 @@ impl<'a> FunctionTranslator<'a> {
                 match ty {
                     FrontendType::F32 => self.builder.ins().f32const(
                         val.parse::<f32>()
-                            .expect(&format!("Invalid f32 literal: {}", val)),
+                            .unwrap_or_else(|_| panic!("Invalid f32 literal: {}", val)),
                     ),
                     FrontendType::F64 => self.builder.ins().f64const(
                         val.parse::<f64>()
-                            .expect(&format!("Invalid f64 literal: {}", val)),
+                            .unwrap_or_else(|_| panic!("Invalid f64 literal: {}", val)),
                     ),
                     _ => {
                         let int_val = val
                             .parse::<i128>()
-                            .expect(&format!("Invalid integer literal: {}", val));
+                            .unwrap_or_else(|_| panic!("Invalid integer literal: {}", val));
                         if cl_ty == types::I128 {
                             // 将 i128 分解为两个 i64: 低位和高位
                             // i128 在内存中是小端存储 (低字节在前)
@@ -548,10 +548,12 @@ impl<'a> FunctionTranslator<'a> {
     fn translate_assign(&mut self, name: String, expr: Expr) -> Value {
         let new_value = self.translate_expr(expr);
         let (variable, ty) = {
-            let (v, t) = self.variables.get(&name).expect(&format!(
-                "Variable '{}' not found - compiler bug in variable declaration",
-                name
-            ));
+            let (v, t) = self.variables.get(&name).unwrap_or_else(|| {
+                panic!(
+                    "Variable '{}' not found - compiler bug in variable declaration",
+                    name
+                )
+            });
             (*v, t.clone())
         };
 
@@ -566,10 +568,10 @@ impl<'a> FunctionTranslator<'a> {
 
         self.builder.def_var(variable, final_value);
 
-        if matches!(ty, FrontendType::DynamicArray(_)) {
-            if !self.dynamic_arrays.iter().any(|(v, _)| *v == variable) {
-                self.dynamic_arrays.push((variable, ty));
-            }
+        if matches!(ty, FrontendType::DynamicArray(_))
+            && !self.dynamic_arrays.iter().any(|(v, _)| *v == variable)
+        {
+            self.dynamic_arrays.push((variable, ty));
         }
 
         final_value
@@ -581,7 +583,7 @@ impl<'a> FunctionTranslator<'a> {
         let (var, arr_ty) = self
             .variables
             .get(name)
-            .expect(&format!("Variable '{}' not found for drop()", name));
+            .unwrap_or_else(|| panic!("Variable '{}' not found for drop()", name));
 
         // 标记为已显式 drop
         self.explicitly_dropped.push(*var);

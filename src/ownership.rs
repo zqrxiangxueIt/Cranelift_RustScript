@@ -122,10 +122,10 @@ impl OwnershipChecker {
                         },
                     );
                     // 标记源数组（如果源是标识符且在追踪中）
-                    if let Expr::Identifier(src_name) = value.as_ref() {
-                        if let Some(info) = self.arrays.get_mut(src_name) {
-                            info.disposition = ArrayDisposition::Returned;
-                        }
+                    if let Expr::Identifier(src_name) = value.as_ref()
+                        && let Some(info) = self.arrays.get_mut(src_name)
+                    {
+                        info.disposition = ArrayDisposition::Returned;
                     }
                 } else if rhs_info.is_some() {
                     // 否则标记为 Owned
@@ -187,12 +187,11 @@ impl OwnershipChecker {
                 // 检查参数中的 DynamicArray，若调用会消耗数组则标记为 Passed
                 if !non_consuming {
                     for arg in args {
-                        if let Expr::Identifier(name) = arg {
-                            if let Some(info) = self.arrays.get_mut(name) {
-                                if info.disposition == ArrayDisposition::Owned {
-                                    info.disposition = ArrayDisposition::Passed;
-                                }
-                            }
+                        if let Expr::Identifier(name) = arg
+                            && let Some(info) = self.arrays.get_mut(name)
+                            && info.disposition == ArrayDisposition::Owned
+                        {
+                            info.disposition = ArrayDisposition::Passed;
                         }
                     }
                 }
@@ -219,19 +218,19 @@ impl OwnershipChecker {
             }
 
             Expr::Index(base, idx) => {
-                if let Expr::Identifier(name) = base.as_ref() {
-                    if let Some(info) = self.arrays.get(name) {
-                        match info.disposition {
-                            ArrayDisposition::Dropped => {
-                                self.errors
-                                    .push(OwnershipError::UseAfterDrop { name: name.clone() });
-                            }
-                            ArrayDisposition::Passed => {
-                                self.errors
-                                    .push(OwnershipError::UseAfterDrop { name: name.clone() });
-                            }
-                            _ => {} // Owned, Returned, Uninitialized — OK
+                if let Expr::Identifier(name) = base.as_ref()
+                    && let Some(info) = self.arrays.get(name)
+                {
+                    match info.disposition {
+                        ArrayDisposition::Dropped => {
+                            self.errors
+                                .push(OwnershipError::UseAfterDrop { name: name.clone() });
                         }
+                        ArrayDisposition::Passed => {
+                            self.errors
+                                .push(OwnershipError::UseAfterDrop { name: name.clone() });
+                        }
+                        _ => {} // Owned, Returned, Uninitialized — OK
                     }
                 }
                 self.analyze_expr(idx, return_var);
