@@ -4,6 +4,8 @@ version = "0.1.0"
 edition = "2021"
 authors = ["Trae Assistant"]
 description = "A memory-safe dynamic array implementation based on RAII principles."
+license = "Apache-2.0 WITH LLVM-exception"
+repository = "https://github.com/zqrxiangxueIt/Cranelift_RustScript"
 
 [dependencies]
 

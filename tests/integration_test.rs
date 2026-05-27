@@ -32,6 +32,7 @@ fn test_pow() {
     assert!((result - 8.0).abs() < 1e-6);
 }
 
+#[cfg(feature = "mkl")]
 #[test]
 fn test_mkl_dgemm() {
     let mut jit = JIT::default();
