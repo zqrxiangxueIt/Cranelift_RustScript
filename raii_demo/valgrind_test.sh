@@ -14,4 +14,6 @@ if [ -z "$TEST_BIN" ]; then
 fi
 
 echo "Running Valgrind on $TEST_BIN..."
-valgrind --leak-check=full --show-leak-kinds=all --error-exitcode=1 "$TEST_BIN"
+# Only fail on "definitely lost" leaks. "possibly lost" and "still reachable"
+# can be false positives from Rust's thread infrastructure.
+valgrind --leak-check=full --show-leak-kinds=all --errors-for-leak-kinds=definite --error-exitcode=1 "$TEST_BIN"

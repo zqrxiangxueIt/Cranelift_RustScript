@@ -1266,15 +1266,12 @@ fn declare_variables_in_stmt(
     expr: &Expr,
 ) {
     match *expr {
-        Expr::Assign(ref name, ref val_expr) => {
-            if !variables.contains_key(name) {
-                // 推断类型
-                let ty = type_checker::infer_type(val_expr, &|n| {
-                    variables.get(n).map(|(_, t)| t.clone())
-                });
-                let var = builder.declare_var(to_cranelift_type(&ty));
-                variables.insert(name.clone(), (var, ty));
-            }
+        Expr::Assign(ref name, ref val_expr) if !variables.contains_key(name) => {
+            // 推断类型
+            let ty =
+                type_checker::infer_type(val_expr, &|n| variables.get(n).map(|(_, t)| t.clone()));
+            let var = builder.declare_var(to_cranelift_type(&ty));
+            variables.insert(name.clone(), (var, ty));
         }
         Expr::IfElse(ref _condition, ref then_body, ref else_body) => {
             for stmt in then_body {
