@@ -69,5 +69,5 @@ jobs:
         working-directory: raii_demo
 
       - name: Dry Run Publish
-        run: cargo publish --dry-run
+        run: cargo publish --dry-run --allow-dirty
         working-directory: raii_demo
