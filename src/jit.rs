@@ -71,18 +71,19 @@ impl JIT {
         // 应用常量折叠优化
         let stmts = optimizer::fold_constants_in_stmts(stmts);
 
-        // 所有权检查：确保 DynamicArray 不泄漏
-        {
+        // 所有权检查：确保 DynamicArray 不泄漏，同时输出 ScopeAnalysis 供 JIT 使用
+        let scope_analysis = {
             let mut checker = ownership::OwnershipChecker::new();
-            let errors = checker.analyze_function(&params, &stmts, &the_return.0);
+            let (analysis, errors) = checker.analyze_function(&params, &stmts, &the_return.0);
             if !errors.is_empty() {
                 let error_msgs: Vec<String> = errors.iter().map(|e| e.to_string()).collect();
                 return Err(format!("ownership errors:\n{}", error_msgs.join("\n")));
             }
-        }
+            analysis
+        };
 
         // 接着，将AST节点转换为Cranelift IR
-        self.translate(name.clone(), params, the_return, stmts)?;
+        self.translate(name.clone(), params, the_return, stmts, scope_analysis)?;
 
         // 最后，声明函数并定义它
         // 导出函数，使外部代码可以调用它
@@ -137,6 +138,7 @@ impl JIT {
         params: Vec<(String, FrontendType)>,
         the_return: (String, FrontendType),
         stmts: Vec<Expr>,
+        scope_analysis: ownership::ScopeAnalysis,
     ) -> Result<(), String> {
         // 将参数类型添加到函数签名中
         for (_, ty) in &params {
@@ -163,10 +165,13 @@ impl JIT {
         builder.switch_to_block(entry_block);
         builder.seal_block(entry_block);
 
+        // 上面的函数全部都是 Cranelift IR 的前置准备工作：设置函数签名、创建函数构建器、准备入口块。下面才是真正的翻译工作：
+        // 使用的都是 Cranelift IR 的库函数，builder.func.signature 是 Cranelift IR 中的函数签名对象，builder.create_block() 创建一个新的基本块，builder.append_block_params_for_function_params() 将函数参数绑定到基本块参数，builder.switch_to_block() 切换当前构建器上下文到指定的基本块，builder.seal_block() 标记基本块为封闭状态（不再接受新的前驱块）。
+
         // 声明所有变量（参数、返回变量及隐式变量）
         let variables = declare_variables(&mut builder, &params, &stmts, entry_block, &the_return);
 
-        // 创建表达式翻译器
+        // 创建表达式翻译器（消费 ownership checker 输出的 ScopeAnalysis）
         let mut trans = FunctionTranslator {
             builder,
             variables,
@@ -175,7 +180,8 @@ impl JIT {
             current_func_ret_type: to_cranelift_type(&the_return.1),
             string_counter: 0,
             type_checker: &self.type_checker,
-            dynamic_arrays: Vec::new(),
+            scope_analysis,
+            scope_depth: 0,
             explicitly_dropped: Vec::new(),
         };
 
@@ -191,44 +197,20 @@ impl JIT {
             .expect("return variable not defined");
         let return_value = trans.builder.use_var(*return_variable);
 
-        // 释放未返回的动态数组 - 根据元素类型调用正确的 drop 函数
-        // 跳过已显式 drop 的数组和返回变量
-        let dynamic_arrays = trans.dynamic_arrays.clone();
-        for (var, arr_ty) in dynamic_arrays {
-            // 跳过返回变量（已返回给调用者）
-            if var == *return_variable {
-                continue;
-            }
-            // 跳过已显式 drop 的数组
-            if trans.explicitly_dropped.contains(&var) {
-                continue;
-            }
-            // 从 DynamicArray<Type> 中提取元素类型
-            if let FrontendType::DynamicArray(elem_ty) = arr_ty {
-                let drop_func_name = match elem_ty.as_ref() {
-                    FrontendType::I64 => "array_drop",
-                    // i32/i16/i8 DynamicArray 在运行时暂不支持，其 drop 与 I64 共用
-                    // 因为当前语法仅生成 I64/F64/Complex128 的 DynamicArray
-                    FrontendType::F64 => "array_drop_f64",
-                    FrontendType::Complex128 => "array_drop_complex128",
-                    _ => "array_drop",
-                };
-
-                let mut drop_sig = trans.module.make_signature();
-                drop_sig.params.push(AbiParam::new(types::I64));
-                drop_sig.returns.push(AbiParam::new(types::I64));
-                let drop_callee = trans
-                    .module
-                    .declare_function(drop_func_name, Linkage::Import, &drop_sig)
-                    .unwrap();
-                let drop_local_callee = trans
-                    .module
-                    .declare_func_in_func(drop_callee, trans.builder.func);
-
-                let val = trans.builder.use_var(var);
-                trans.builder.ins().call(drop_local_callee, &[val]);
-            }
-        }
+        // ═══════════════════════════════════════════════════════════
+        // Auto-Drop 机制 (v2): 消费 ScopeAnalysis 进行顶层作用域释放
+        // ═══════════════════════════════════════════════════════════
+        //
+        // scope_analysis.scope_vars[&0] 包含函数体顶层（非 Block/WhileLoop 内）
+        // 定义的所有 DynamicArray 变量名。对于每个变量：
+        //   - 跳过返回变量（所有权转移给调用者）
+        //   - 跳过已在 explicitly_dropped 中的变量（translate_drop 已 emit drop 调用）
+        //   - 否则 emit call array_drop_xxx(var)
+        //
+        // 块作用域和循环作用域的释放由 translate_expr 中的 Block/WhileLoop
+        // 分支在翻译时即时处理（Phase 3），不在此处集中处理。
+        trans.emit_scope_drop(0, Some(*return_variable));
+        //                             ↑ cranelift-frontend::FunctionBuilder
 
         trans.builder.ins().return_(&[return_value]);
 
@@ -274,11 +256,70 @@ struct FunctionTranslator<'a> {
     current_func_ret_type: types::Type,                   // 当前函数返回类型
     string_counter: usize,
     type_checker: &'a TypeChecker,
-    dynamic_arrays: Vec<(Variable, FrontendType)>, // (variable, element_type)
-    explicitly_dropped: Vec<Variable>,             // 已显式 drop 的数组，不再自动 drop
+    /// 作用域分析结果（由 ownership checker 预计算）。
+    /// JIT 直接查询此结构，不再独立追踪作用域。
+    scope_analysis: ownership::ScopeAnalysis,
+    /// 当前作用域深度。0 = 函数体顶层，每进入一层 Block +1。
+    scope_depth: usize,
+    /// 已通过 drop() 语句显式释放的变量集合。
+    /// 在 translate_drop 中填充。emit_scope_drop 会跳过此集合中的变量。
+    explicitly_dropped: Vec<Variable>,
 }
 
 impl<'a> FunctionTranslator<'a> {
+    /// 根据元素类型返回对应的 drop 函数名
+    fn drop_func_for(elem_ty: &FrontendType) -> &'static str {
+        match elem_ty {
+            FrontendType::I64 | FrontendType::I32 | FrontendType::I16 | FrontendType::I8 => {
+                "array_drop"
+            }
+            FrontendType::F64 => "array_drop_f64",
+            FrontendType::Complex128 => "array_drop_complex128",
+            _ => "array_drop",
+        }
+    }
+
+    /// 发射一条 `call array_drop_xxx(val)` IR 指令
+    fn emit_drop_call(&mut self, drop_func_name: &str, val: Value) {
+        let mut drop_sig = self.module.make_signature();
+        drop_sig.params.push(AbiParam::new(types::I64));
+        drop_sig.returns.push(AbiParam::new(types::I64));
+        let drop_callee = self
+            .module
+            .declare_function(drop_func_name, Linkage::Import, &drop_sig)
+            .unwrap();
+        let drop_local = self
+            .module
+            .declare_func_in_func(drop_callee, self.builder.func);
+        self.builder.ins().call(drop_local, &[val]);
+    }
+
+    /// 对指定作用域深度中所有未显式 drop 的 DynamicArray 发射 drop 调用。
+    /// `return_variable` 为 `Some(var)` 时跳过该变量（顶层作用域所有权转移给调用者）。
+    fn emit_scope_drop(&mut self, depth: usize, return_variable: Option<Variable>) {
+        if let Some(vars) = self.scope_analysis.scope_vars.get(&depth) {
+            let vars = vars.clone();
+            for name in &vars {
+                if let Some((var, ty)) = self.variables.get(name) {
+                    if let Some(ret_var) = return_variable
+                        && *var == ret_var
+                    {
+                        continue;
+                    }
+                    if self.explicitly_dropped.contains(var) {
+                        self.explicitly_dropped.retain(|v| v != var);
+                        continue;
+                    }
+                    if let FrontendType::DynamicArray(elem_ty) = ty {
+                        let drop_func = Self::drop_func_for(elem_ty);
+                        let val = self.builder.use_var(*var);
+                        self.emit_drop_call(drop_func, val);
+                    }
+                }
+            }
+        }
+    }
+
     fn translate_expr(&mut self, expr: Expr) -> Value {
         //梯度下降翻译
         match expr {
@@ -436,13 +477,25 @@ impl<'a> FunctionTranslator<'a> {
                 self.translate_if_else(*condition, then_body, else_body)
             }
             Expr::WhileLoop(condition, loop_body) => {
-                self.translate_while_loop(*condition, loop_body)
+                self.scope_depth += 1;
+                let result = self.translate_while_loop(*condition, loop_body, self.scope_depth);
+                self.scope_depth -= 1;
+                result
             }
             Expr::Cast(expr, target_ty) => {
                 let val = self.translate_expr(*expr);
                 self.translate_cast(val, to_cranelift_type(&target_ty))
             }
             Expr::Drop(name) => self.translate_drop(&name),
+            Expr::Block(body) => {
+                self.scope_depth += 1;
+                for stmt in body {
+                    self.translate_expr(stmt);
+                }
+                self.emit_scope_drop(self.scope_depth, None);
+                self.scope_depth -= 1;
+                InstBuilder::iconst(self.builder.ins(), types::I64, 0)
+            }
         }
     }
 
@@ -544,7 +597,22 @@ impl<'a> FunctionTranslator<'a> {
         let zero = InstBuilder::iconst(self.builder.ins(), types::I64, 0);
         self.builder.ins().select(bool_res, one, zero)
     }
-    ///变量赋值
+    /// 翻译变量赋值语句。
+    ///
+    /// ## 执行流程
+    /// 1. 翻译右值表达式 → 获得 SSA 值
+    /// 2. 查找变量的 (Variable 句柄, 预期类型)
+    /// 3. 必要时插入隐式类型转换 (translate_cast)
+    /// 4. def_var 将新值绑定到 SSA 变量
+    ///
+    /// ## 作用域追踪
+    /// DynamicArray 的作用域追踪由 ownership checker 输出的 ScopeAnalysis
+    /// 统一管理，翻译阶段不再手动登记。作用域退出时的 auto-drop 由
+    /// emit_scope_drop() 根据 ScopeAnalysis.scope_vars 统一处理。
+    ///
+    /// FIXME: 重新赋值时旧数组的指针被覆盖，旧数组泄漏。
+    /// 所有权检查器已通过覆盖检测捕获此场景（报 LeakedArray），
+    /// JIT 层暂无运行时覆盖前 auto-drop。
     fn translate_assign(&mut self, name: String, expr: Expr) -> Value {
         let new_value = self.translate_expr(expr);
         let (variable, ty) = {
@@ -567,55 +635,34 @@ impl<'a> FunctionTranslator<'a> {
         };
 
         self.builder.def_var(variable, final_value);
-
-        if matches!(ty, FrontendType::DynamicArray(_))
-            && !self.dynamic_arrays.iter().any(|(v, _)| *v == variable)
-        {
-            self.dynamic_arrays.push((variable, ty));
-        }
+        // 注：DynamicArray 作用域追踪现已由 scope_analysis 统一管理，
+        // 不再在此处手动登记 dynamic_arrays。
 
         final_value
     }
 
-    /// 处理 drop() 显式释放
+    /// 翻译 `drop(arr)` 语句——显式释放 DynamicArray。
+    ///
+    /// 1. 查找变量，标记为 explicitly_dropped（避免 scope exit auto-drop 重复释放）
+    /// 2. 使用 emit_drop_call + drop_func_for 发射 drop 调用
+    /// 3. 返回 0
     fn translate_drop(&mut self, name: &str) -> Value {
-        // 获取变量
         let (var, arr_ty) = self
             .variables
             .get(name)
             .unwrap_or_else(|| panic!("Variable '{}' not found for drop()", name));
 
-        // 标记为已显式 drop
         self.explicitly_dropped.push(*var);
 
-        // 发射 drop 调用
         let elem_ty = match arr_ty {
             FrontendType::DynamicArray(inner) => inner.as_ref(),
             _ => panic!("drop() can only be called on DynamicArray"),
         };
 
-        let drop_func_name = match elem_ty {
-            FrontendType::I64 => "array_drop",
-            FrontendType::F64 => "array_drop_f64",
-            FrontendType::Complex128 => "array_drop_complex128",
-            _ => "array_drop",
-        };
-
-        let mut drop_sig = self.module.make_signature();
-        drop_sig.params.push(AbiParam::new(types::I64));
-        drop_sig.returns.push(AbiParam::new(types::I64));
-        let drop_callee = self
-            .module
-            .declare_function(drop_func_name, Linkage::Import, &drop_sig)
-            .unwrap();
-        let drop_local_callee = self
-            .module
-            .declare_func_in_func(drop_callee, self.builder.func);
-
+        let drop_func_name = Self::drop_func_for(elem_ty);
         let val = self.builder.use_var(*var);
-        self.builder.ins().call(drop_local_callee, &[val]);
+        self.emit_drop_call(drop_func_name, val);
 
-        // drop() 返回 0 表示成功
         InstBuilder::iconst(self.builder.ins(), types::I64, 0)
     }
 
@@ -675,7 +722,12 @@ impl<'a> FunctionTranslator<'a> {
     }
 
     /// while 循环语句
-    fn translate_while_loop(&mut self, condition: Expr, loop_body: Vec<Expr>) -> Value {
+    fn translate_while_loop(
+        &mut self,
+        condition: Expr,
+        loop_body: Vec<Expr>,
+        loop_scope_depth: usize,
+    ) -> Value {
         let header_block = self.builder.create_block();
         let body_block = self.builder.create_block();
         let exit_block = self.builder.create_block();
@@ -694,6 +746,10 @@ impl<'a> FunctionTranslator<'a> {
         for expr in loop_body {
             self.translate_expr(expr);
         }
+
+        // 每次迭代结束时释放循环作用域内的 DynamicArray
+        self.emit_scope_drop(loop_scope_depth, None);
+
         self.builder.ins().jump(header_block, &[]);
 
         self.builder.switch_to_block(exit_block);
@@ -1223,7 +1279,8 @@ fn declare_variables(
     let mut variables = HashMap::new();
 
     // - 注册 ：为每个函数参数创建一个 Cranelift 变量（ declare_var ）。
-    // - 绑定 ：把函数的 入口参数值 （ block_params ）赋给这个变量（ def_var ）。
+    // - 绑定 ：把函数的 入口参数值 （ block_params ）赋给这个变量（ def_var ）。Cranelift 允许我们定义一个 Variable 作为占位符，后续用 def_var 不断把新的 SSA Value 绑定给它。这样，当变量 a 在函数体内被重新赋值时，无需重建所有引用链，只需调用 def_var(var, new_value) 更新即可
+    // - 跟踪 ：将变量名、Variable 句柄和类型存入 HashMap，以便后续查找和类型检查。variables.insert(name.clone(), (var, ty.clone()));把 "a" → (var_0, I32) 存入映射表。后续翻译函数体遇到 Expr::Identifier("a") 时，通过这张表就能找到对应的 Cranelift Variable，再用 use_var 读取它的当前值
     for (i, (name, ty)) in params.iter().enumerate() {
         let val = builder.block_params(entry_block)[i];
         let var = builder.declare_var(to_cranelift_type(ty));
@@ -1233,6 +1290,9 @@ fn declare_variables(
         // 跟踪作为参数传递的动态数组（调用者拥有它们？通常调用者拥有，但在 Toy 中，如果是最后一个拥有者，我们可能希望被调用者丢弃。
         // 为简单起见，我们假设被调用者不丢弃参数，只丢弃局部变量。
         // 实际上，如果我们想要 RAII，我们应该决定所有权。
+        // 因此，Rust 的做法是编译期跟踪每一次借用来判定谁最后释放。Toy 没有这个能力，所以所有权检查器走了**过近似（over-approximation）**路线：
+        // Owned → 传给任何函数 → 立即标记 Passed → 视为"已消费"，不再要求显式 drop
+        // 如果一个参数数组也有同样的"传给子函数"行为，那递归调用链的每个节点都会把所有权状态搞乱。最简单的策略就是：不在参数上做任何追踪，把责任完全留给创建者。
     }
 
     // 声明返回值变量
@@ -1283,6 +1343,11 @@ fn declare_variables_in_stmt(
         }
         Expr::WhileLoop(ref _condition, ref loop_body) => {
             for stmt in loop_body {
+                declare_variables_in_stmt(builder, variables, stmt);
+            }
+        }
+        Expr::Block(ref body) => {
+            for stmt in body {
                 declare_variables_in_stmt(builder, variables, stmt);
             }
         }

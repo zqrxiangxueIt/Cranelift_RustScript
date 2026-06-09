@@ -1,0 +1,42 @@
+fn main() -> (r: i64) {
+    puts("=== Scope Demo ===\n")
+
+    puts("[1] Top-level array (auto-drop at function end)\n")
+    a = array [1, 2, 3]
+    printf("  a[0] = %d\n", a[0])
+
+    puts("[2] Block-scoped array (auto-drop at block end)\n")
+    {
+        b = array [4, 5, 6]
+        printf("  b[0] = %d\n", b[0])
+    }
+
+    puts("[3] Nested block scopes\n")
+    {
+        puts("  outer block\n")
+        {
+            c = array [7, 8, 9]
+            printf("  c[0] = %d\n", c[0])
+        }
+        puts("  c already freed here\n")
+    }
+
+    puts("[4] Explicit drop() still works anywhere\n")
+    {
+        d = array [10, 20]
+        printf("  d[0] = %d\n", d[0])
+        drop(d)
+        puts("  d explicitly dropped inside block\n")
+    }
+
+    puts("[5] While loop: auto-drop per iteration\n")
+    i = 0
+    while i < 5 {
+        tmp = array [i, i+1]
+        printf("  tmp[0] = %d\n", tmp[0])
+        i = i + 1
+    }
+
+    drop(a)
+    r = 0
+}

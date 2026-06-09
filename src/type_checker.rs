@@ -370,5 +370,6 @@ pub fn infer_type(expr: &Expr, get_var_type: &impl Fn(&str) -> Option<Type>) -> 
         Expr::WhileLoop(_, _) => Type::I64,
         Expr::GlobalDataAddr(_) => Type::I64, // Pointer
         Expr::Drop(_) => Type::I64,           // drop() 不返回有用值
+        Expr::Block(_) => Type::I64,          // 块作用域，返回占位值
     }
 }

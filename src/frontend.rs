@@ -25,6 +25,7 @@ pub enum Expr {
     GlobalDataAddr(String),                  // &name 全局数据地址
     Cast(Box<Expr>, Type),                   // expr as Type
     Drop(String),                            // drop(var) 显式释放
+    Block(Vec<Expr>),                        // 块作用域 { stmts }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -45,8 +46,11 @@ pub enum Type {
     DynamicArray(Box<Type>),
 }
 
-peg::parser!(pub grammar parser() for str {
+peg::parser!(pub grammar parser() for str {    //peg 是 Parsing Expression Grammars 的 Rust 实现的第三方 crate
     use super::{Expr, Type};
+    //use — 把路径里的项引入到当前作用域
+    //super — 模块路径里的"上一级"，
+    //即在从父模块开始找 Expr（表达式枚举）和 Type（类型枚举），这样我们就可以在语法规则里直接使用它们了
     /// rule是peg宏的关键字，表示定义一个语法规则
     /// function()规则用于解析函数定义，返回一个元组，包含函数名、参数列表、返回值类型和函数体语句列表
     /// // c = a + b 的表示：
@@ -89,6 +93,7 @@ peg::parser!(pub grammar parser() for str {
     //一个“语句块”是由 0个或多个 （ * ）“单条语句”组成的序列
     //statement()*会不断调用 statement() 规则，直到无法匹配为止
     //匹配到的所有结果会自动收集成一个 Vec （向量/列表）
+    //s.into_iter().flatten().collect()把"嵌套的 Vec"拍平成一个单层的 Vec<Expr> 返回，因为statement()规则返回的是 Option<Expr>，所以会有一些 None 需要过滤掉，最终得到一个只包含 Some(Expr) 的 Vec<Expr>。
     rule statements() -> Vec<Expr>
         = s:(statement()*) { s.into_iter().flatten().collect() }
     //statement() ：单条语句的定义
@@ -108,6 +113,7 @@ peg::parser!(pub grammar parser() for str {
     rule expression() -> Expr
         = if_else()
         / while_loop()
+        / block_stmt()
         / "drop" _ "(" _ i:identifier() _ ")" { Expr::Drop(i) }
         / assignment()          //表示赋值语句，例如 a = 1
         / binary_op()           //表示二元操作符，例如 a + b 或 a * b
@@ -122,6 +128,13 @@ peg::parser!(pub grammar parser() for str {
         = "while" _ e:expression() _ "{" _ "\n"
         loop_body:statements() _ "}"
         { Expr::WhileLoop(Box::new(e), loop_body) }
+
+    /// 块作用域：{ stmts }
+    /// PEG 有序选择天然消除歧义——if/while 以关键字开头，不会匹配独立的 {
+    rule block_stmt() -> Expr
+        = "{" _ "\n"
+        body:statements() _ "}" _
+        { Expr::Block(body) }
 
     ///变量赋值语法，identifier()明确规定左边 必须是一个标识符。匹配到的变量名（字符串）存入变量 i
     /// e:expression()匹配赋值号右边的部分（右值），右边可以是 任意表达式 （数字、运算、函数调用、甚至另一个赋值）
@@ -157,6 +170,11 @@ peg::parser!(pub grammar parser() for str {
         l:literal() { l }
         "(" _ e:expression() _ ")" { e }
     }
+    //a:@ _ "[" _ idx:expression() _ "]"匹配 arr[0]、darr[i+1] 这种下标访问
+    //这里调用的是完整的顶层 expression()，不是 binary_op()，所以索引里可以塞 if/while/赋值等任意表达式，比如 arr[if i > 0 { i } else { 0 }]
+    //i:identifier() _ "(" args:((_ e:expression() _ {e}) ** ",") ")" 函数调用，匹配 foo(a, b, c)、puts("hello") 这种调用
+    //** "," 允许0 个参数
+
     ///解析过程 ( a + b * c ) ：
     ///- 解析器首先尝试匹配最外层的低优先级规则（加法层）。
     ///- 它识别出 + 号。 + 号左边的 a 会“向下”递归去匹配更高优先级的规则，最终匹配到一个标识符 a 。
@@ -179,6 +197,7 @@ peg::parser!(pub grammar parser() for str {
         / "[" _ t:type_name() _ ";" _ len:$(['0'..='9']+) _ "]" {
             Type::Array(Box::new(t), len.parse().unwrap())
         }
+    //array<T> 和 [T; N] 是 Toy 里仅有的两种"带参数类型"语法，分别构造 Type::DynamicArray(Box<Type>) 和 Type::Array(Box<Type>, usize)。t:type_name() 的递归让它们能任意嵌套，$(...) 让 len 拿到原始数字字符串供后续解析。语法直接照搬 Rust，只在 type_name() 内部生效，不会和数组字面量 [1, 2, 3] 冲突，因为分隔符（; vs ,）和元素语法（type_name vs expression）不同。
 
     //$ 符号 ：这是 PEG 的操作符，意思是“捕获匹配到的原始字符串”。如果不加 $ ，匹配成功了但你拿不到具体的文本内容
     //返回值 ：把捕获到的切片转成 String 返回
@@ -188,6 +207,14 @@ peg::parser!(pub grammar parser() for str {
             { n.to_owned() }
         }
         / expected!("identifier")
+//
+//用 { n.to_owned() } 把 &str 转成 String（函数签名要求返回 String）
+//keyword()：尝试匹配任意一个关键字（fn / if / else / while / as / array / i8..i128 / f32 / f64 / string / complex64 / complex128）
+// 负向字符类：!['a'..='z' | 'A'..='Z' | '0'..='9' | '_']
+// 要求当前位置的字符不是字母/数字/下划线（也就是"非标识符字符"）
+// 然后后面的['a'..='z' | 'A'..='Z' | '_'] 要求当前位置的字符必须是字母或下划线（也就是"标识符开头字符"）
+// 最后 ['a'..='z' | 'A'..='Z' | '0'..='9' | '_']* 匹配标识符的剩余部分（可以是字母、数字或下划线，允许有0个）
+//通过两层否定的负向预查 精确判断"当前位置是'关键字 + 非标识符字符'还是'真标识符'"
 
     rule keyword()
         = "fn" / "if" / "else" / "while" / "as" / "array" / "i8" / "i16" / "i32" / "i64" / "i128" / "f32" / "f64" / "string" / "complex64" / "complex128"
@@ -201,6 +228,9 @@ peg::parser!(pub grammar parser() for str {
         / n:$(['0'..='9']+) { Expr::Literal(n.to_owned(), Type::I64) }
         / "&" i:identifier() { Expr::GlobalDataAddr(i) }
 
+    // 负责解析 Toy 语法里所有源代码里直接写出来的常量值
+    //顺序为：字符串字面量、复数字面量、动态数组字面量、固定数组字面量、浮点数字面量、整数字面量、全局数据地址
+    //array 关键字是区分固定数组还是动态数组的，因为它们的语法不同（array [1, 2, 3] vs [1, 2, 3]），所以放在不同的规则里解析
     rule array_literal() -> Expr
         = "[" _ elems:((_ e:expression() _ {e}) ** ",") _ "]" {
             Expr::ArrayLiteral(elems, Type::I64) // Placeholder type, inferred in JIT

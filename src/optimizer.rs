@@ -8,10 +8,12 @@ use crate::frontend::{Expr, Type};
 pub fn fold_constants_in_stmts(stmts: Vec<Expr>) -> Vec<Expr> {
     stmts.into_iter().map(fold_constants).collect()
 }
+//因为fold_constants 是单表达式版本，这里要递归处理每个语句中的子表达式，确保整个函数体都被优化到。
+//stmts.into_iter() 是 Vec 的标准"消耗式迭代器入口"（来自 IntoIterator trait），把 Vec<Expr> 拆成一个一个 owned Expr 喂给 fold_constants，避免任何 clone 或借用冲突。
 
 /// 对单个表达式应用常量折叠优化
 pub fn fold_constants(expr: Expr) -> Expr {
-    match expr {
+    match expr {                                    //match expr 是 Rust 内置的穷尽性模式匹配
         // 算术运算
         Expr::Add(lhs, rhs) => fold_binary_op(*lhs, *rhs, OpType::Add, |a, b| a + b),
         Expr::Sub(lhs, rhs) => fold_binary_op(*lhs, *rhs, OpType::Sub, |a, b| a - b),
@@ -41,6 +43,11 @@ pub fn fold_constants(expr: Expr) -> Expr {
             Box::new(fold_constants(*cond)),
             body.into_iter().map(fold_constants).collect(),
         ),
+
+        // 块作用域 - 递归处理
+        Expr::Block(body) => {
+            Expr::Block(body.into_iter().map(fold_constants).collect())
+        }
 
         // 函数调用 - 递归处理参数
         Expr::Call(name, args) => Expr::Call(name, args.into_iter().map(fold_constants).collect()),
@@ -104,6 +111,9 @@ where
         _ => Expr::Add(lhs, rhs),
     }
 }
+
+//对 +，int_op = |a, b| a + b
+//to_string()来自 std::string::ToString trait，将类型转换成String
 
 /// 乘法常量折叠
 fn fold_mul<F>(lhs: Box<Expr>, rhs: Box<Expr>, int_op: F) -> Expr
