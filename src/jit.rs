@@ -71,7 +71,16 @@ impl JIT {
         // 应用常量折叠优化
         let stmts = optimizer::fold_constants_in_stmts(stmts);
 
-        // 所有权检查：确保 DynamicArray 不泄漏，同时输出 ScopeAnalysis 供 JIT 使用
+        // ═══════════════════════════════════════════════════════════
+        // 阶段 1: 编译期所有权检查 (内存回收机制 — 编译期静态分析)
+        // ═══════════════════════════════════════════════════════════
+        //
+        // 所有权检查器遍历 AST，追踪每个 DynamicArray 的状态。
+        // 成功时输出 ScopeAnalysis — 每个作用域应释放哪些数组的"清单"。
+        // 失败时返回错误（LeakedArray / DoubleDrop / UseAfterDrop 等）。
+        //
+        // ScopeAnalysis 随后传递给 FunctionTranslator，实现统一的
+        // "编译期检查 → JIT 运行时释放"数据流。
         let scope_analysis = {
             let mut checker = ownership::OwnershipChecker::new();
             let (analysis, errors) = checker.analyze_function(&params, &stmts, &the_return.0);
@@ -82,7 +91,9 @@ impl JIT {
             analysis
         };
 
-        // 接着，将AST节点转换为Cranelift IR
+        // ═══════════════════════════════════════════════════════════
+        // 阶段 2: AST → Cranelift IR 翻译 (含运行时 auto-drop)
+        // ═══════════════════════════════════════════════════════════
         self.translate(name.clone(), params, the_return, stmts, scope_analysis)?;
 
         // 最后，声明函数并定义它
@@ -248,6 +259,19 @@ enum BinOp {
     Div,
 }
 
+/// 函数翻译器 — 消费 ScopeAnalysis, 在翻译过程中插入 auto-drop 指令。
+///
+/// # 内存回收中的角色
+///
+/// 本结构体是"运行时兜底"的实施者。它消费所有权检查器输出的 ScopeAnalysis,
+/// 在以下时机自动发射 `call array_drop_xxx` IR 指令:
+///
+/// - **函数返回前**: 遍历 scope_vars[0], 释放顶层未 drop/return 的数组
+/// - **Block 退出时**: scope_depth++, 翻译块内语句, emit_scope_drop(depth)
+/// - **While 每次迭代**: 循环体翻译后, emit_scope_drop(loop_depth)
+///
+/// `explicitly_dropped` 列表确保已通过 `drop(arr)` 手动释放的变量
+/// 不会被 auto-drop 再次释放 (防止 double-free)。
 struct FunctionTranslator<'a> {
     builder: FunctionBuilder<'a>,                         // 函数构建器
     variables: HashMap<String, (Variable, FrontendType)>, // 变量映射表
@@ -258,11 +282,15 @@ struct FunctionTranslator<'a> {
     type_checker: &'a TypeChecker,
     /// 作用域分析结果（由 ownership checker 预计算）。
     /// JIT 直接查询此结构，不再独立追踪作用域。
+    /// 键 = 作用域深度, 值 = 该深度内定义的 DynamicArray 变量名列表。
     scope_analysis: ownership::ScopeAnalysis,
-    /// 当前作用域深度。0 = 函数体顶层，每进入一层 Block +1。
+    /// 当前作用域深度。0 = 函数体顶层，每进入一层 Block/While body +1。
+    /// emit_scope_drop(depth) 使用此值确定释放哪个作用域的数组。
     scope_depth: usize,
-    /// 已通过 drop() 语句显式释放的变量集合。
-    /// 在 translate_drop 中填充。emit_scope_drop 会跳过此集合中的变量。
+    /// 已通过 drop() 语句显式释放的 Cranelift Variable 集合。
+    /// translate_drop() 在遇到 `drop(arr)` 时填充。
+    /// emit_scope_drop() 遍历时会跳过此集合中的变量, 并在处理后清理条目,
+    /// 防止跨迭代/跨作用域残留。
     explicitly_dropped: Vec<Variable>,
 }
 
@@ -295,7 +323,24 @@ impl<'a> FunctionTranslator<'a> {
     }
 
     /// 对指定作用域深度中所有未显式 drop 的 DynamicArray 发射 drop 调用。
-    /// `return_variable` 为 `Some(var)` 时跳过该变量（顶层作用域所有权转移给调用者）。
+    ///
+    /// # 内存回收核心方法
+    ///
+    /// 本方法是 JIT 侧运行时 auto-drop 的**统一入口**。无论是函数返回前、
+    /// Block 退出、还是 While 循环迭代结束，最终都通过此方法释放数组。
+    ///
+    /// # 参数
+    /// - `depth`: 要释放的作用域深度 (0=顶层, 1=第一层 Block/While, ...)
+    /// - `return_variable`: 顶层释放时传入 `Some(r)`, 跳过返回变量
+    ///   (所有权转移给调用者); Block/While 释放时传入 `None`
+    ///
+    /// # 防 double-free 机制
+    ///
+    /// 遍历 scope_analysis.scope_vars[depth] 中的每个变量名, 查找其对应的
+    /// Cranelift Variable 和类型。对 `explicitly_dropped` 中的变量跳过
+    /// (translate_drop 已发射 call array_drop), 并在处理后清理条目, 避免:
+    /// 1. 同一作用域内重复 drop
+    /// 2. 循环下一次迭代时误跳过同名变量
     fn emit_scope_drop(&mut self, depth: usize, return_variable: Option<Variable>) {
         if let Some(vars) = self.scope_analysis.scope_vars.get(&depth) {
             let vars = vars.clone();

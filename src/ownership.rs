@@ -1,6 +1,28 @@
-//! DynamicArray 所有权检查器
+//! DynamicArray 所有权检查器 —— 内存回收机制 (编译期)
 //!
-//! 编译期检测 DynamicArray 的泄漏和使用后-drop 等错误。
+//! # 双层回收架构
+//!
+//! Toy 语言的内存回收采用"编译期检查 + 运行时兜底"的双层机制：
+//!
+//! 1. **编译期 (本模块)**: 静态分析每个 DynamicArray 的所有权状态转换，
+//!    拦截可证明的泄漏、double-free、use-after-drop 等错误。
+//!    同时输出 `ScopeAnalysis` 告知 JIT 每个作用域应释放哪些数组。
+//!
+//! 2. **运行时 (jit.rs)**: JIT 消费 `ScopeAnalysis`, 在 Block 退出、
+//!    While 迭代结束、函数返回前自动插入 `call array_drop_xxx` 指令。
+//!    嵌套作用域 (depth>0) 的 Owned 数组不报泄漏——由 JIT 按 RAII 语义释放。
+//!
+//! # 所有权状态机
+//!
+//! ```text
+//! array [1,2,3] → Owned
+//!     ├── drop(arr)         → Dropped  (不能再访问)
+//!     ├── r = arr           → Returned (所有权转移给调用者)
+//!     ├── array_push(arr,x) → Passed   (已消费, JIT 兜底释放)
+//!     └── (函数结束)         → 顶层 Owned 报 LeakedArray
+//! ```
+//!
+//! 详见 docs/MEMORY_RECLAMATION.md。
 
 use crate::frontend::{Expr, Type};
 use std::collections::HashMap;
@@ -78,6 +100,23 @@ impl std::fmt::Display for OwnershipError {
 
 /// 由 OwnershipChecker 输出的作用域分析结果。
 /// JIT 编译器消费此结构，无需独立追踪作用域。
+///
+/// # 内存回收机制中的角色
+///
+/// ScopeAnalysis 是所有权检查器与 JIT 编译器之间的**唯一数据接口**。
+/// 改进前, ownership.rs 和 jit.rs 各自维护一套 DynamicArray 追踪逻辑,
+/// 两套系统独立决策, 可能导致不一致。
+/// 现在, 所有权检查器输出 ScopeAnalysis, JIT 直接查询它来决定
+/// 每个作用域退出时应释放哪些数组——单一真相源。
+///
+/// # 数据含义
+///
+/// scope_vars[0] = ["a", "b"]  → 函数体顶层定义的 a, b
+///     → 函数返回前必须 drop/return, 否则报 LeakedArray
+/// scope_vars[1] = ["c"]       → 第一个 Block/While 内定义的 c
+///     → 作用域退出时 JIT 自动释放, 不报错 (RAII)
+/// scope_vars[2] = ["d"]       → 嵌套二层内定义的 d
+///     → 同上, 先于外层释放
 #[derive(Debug, Clone)]
 pub struct ScopeAnalysis {
     /// scope_depth -> 该作用域内定义的 DynamicArray 变量名列表
@@ -85,7 +124,13 @@ pub struct ScopeAnalysis {
     pub scope_vars: HashMap<usize, Vec<String>>,
 }
 
-/// 所有权检查器，把整个函数体（AST 节点列表）过一遍，对每个 Expr 做状态追踪和违规检测，最后返回发现的错误列表
+/// 所有权检查器，把整个函数体（AST 节点列表）过一遍，对每个 Expr 做状态追踪和违规检测，最后返回发现的错误列表。
+///
+/// # 内存回收中的角色
+///
+/// 本结构体实现了编译期静态分析，追踪每个 DynamicArray 变量从创建到释放的
+/// 完整生命周期。分析结果通过 ScopeAnalysis 传递给 JIT 编译器，形成
+/// "编译期检查 + 运行时兜底"的双层回收机制。
 pub struct OwnershipChecker {
     /// 跟踪所有 DynamicArray 变量。键=变量名，值=(状态, 定义所在作用域深度)
     arrays: HashMap<String, (ArrayInfo, usize)>,
