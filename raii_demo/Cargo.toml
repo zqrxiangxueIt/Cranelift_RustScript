@@ -1,3 +1,7 @@
+# ⚠ 此 crate 已从主项目中解耦，不再参与编译。
+# 主项目的动态数组已改用 std::vec::Vec（见 src/runtime/array.rs）。
+# 此目录保留作为 RAII 手工实现的参考代码，如需恢复依赖，
+# 在主项目 Cargo.toml 中添加：raii_demo = { path = "raii_demo" }
 [package]
 name = "raii_demo"
 version = "0.1.0"

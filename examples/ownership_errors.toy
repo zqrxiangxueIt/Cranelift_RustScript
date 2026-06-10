@@ -1,0 +1,35 @@
+fn main() -> (r: i64) {
+    puts("========================================\n")
+    puts("  Ownership Errors Demo\n")
+    puts("  This script intentionally triggers\n")
+    puts("  all ownership check failures.\n")
+    puts("  It will NOT compile!\n")
+    puts("========================================\n")
+
+    puts("\n--- [1] LEAK: array created but never dropped or passed ---\n")
+    leak_arr = array [1, 2, 3]
+    x = leak_arr[0]
+    puts("  This array is created and used, but...\n")
+    puts("  neither dropped nor passed to a function.\n")
+
+    puts("\n--- [2] DOUBLE DROP: array dropped twice ---\n")
+    dd_arr = array [10, 20]
+    drop(dd_arr)
+    drop(dd_arr)
+
+    puts("\n--- [3] DROP AFTER PASSED: already passed to a function ---\n")
+    passed_arr = array [100, 200]
+    array_push(passed_arr, 300)
+    drop(passed_arr)
+
+    puts("\n--- [4] USE AFTER DROP: index array after drop() ---\n")
+    uad_arr = array [1, 2, 3]
+    drop(uad_arr)
+    v = uad_arr[0]
+
+    puts("\n--- [5] DROP NON-ARRAY: drop() on a plain variable ---\n")
+    n = 42
+    drop(n)
+
+    r = 0
+}

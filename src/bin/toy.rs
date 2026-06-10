@@ -1,4 +1,3 @@
-#![allow(clippy::missing_transmute_annotations)]
 use anyhow::{Context, Result, anyhow};
 use cranelift_jit_demo::cli::Cli;
 use cranelift_jit_demo::jit;
@@ -7,12 +6,12 @@ use std::mem;
 use std::path::Path;
 
 fn main() -> Result<()> {
-    let cli = Cli::parse_args(); //调用Self::parse()，底层库是clap，RUST主流的命令行参数解析库，根据 struct 的字段和 #[arg] 属性：获得脚本路径、是否运行测试等信息。
-    if cli.test {
+    let cli = Cli::parse_args();  //调用Self::parse()，底层库是clap，RUST主流的命令行参数解析库，根据 struct 的字段和 #[arg] 属性：获得脚本路径、是否运行测试等信息。
+    if cli.test {       //当传了--test参数时，运行所有集成测试，验证JIT编译器的正确性。
         println!("Running integration tests...");
         run_all_tests().context("Integration tests failed")?;
         println!("All tests passed!");
-    } else if let Some(file_path) = cli.file {
+    } else if let Some(file_path) = cli.file { //当传了脚本路径参数时，运行指定的toy脚本。
         run_script(&file_path).with_context(|| format!("Failed to run script: {:?}", file_path))?;
     } else {
         use clap::CommandFactory;
@@ -38,8 +37,8 @@ fn run_script(path: &Path) -> Result<()> {
 
     // 3. JIT Compile
     let mut jit = jit::JIT::default();
-    let code_ptr = jit
-        .compile(&source)
+    let code_ptr = jit     //重点核心是这里的compile
+        .compile(&source)     
         .map_err(|e| anyhow!("Compilation error: {}", e))?;
 
     // 4. Execute (assuming no arguments for now, or main)
@@ -240,7 +239,7 @@ fn run_complex_test(jit: &mut jit::JIT) -> Result<i64, String> {
         if result == 1 {
             Ok(result)
         } else {
-            Err("Complex test failed".to_string())
+            Err(format!("Complex test failed"))
         }
     }
 }
@@ -387,6 +386,5 @@ fn dynamic_array_test() -> (r: i64) {
     arr = array [10, 20, 30]
     array_push(arr, 40)
     r = arr[3]
-    drop(arr)
 }
 "#;

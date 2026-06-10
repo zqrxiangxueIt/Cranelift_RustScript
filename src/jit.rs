@@ -191,9 +191,10 @@ impl JIT {
             current_func_ret_type: to_cranelift_type(&the_return.1),
             string_counter: 0,
             type_checker: &self.type_checker,
-            scope_analysis,
-            scope_depth: 0,
-            explicitly_dropped: Vec::new(),
+            // 内存回收系统(新增）
+            scope_analysis,    // 标注了每个作用域层有哪些数组要释放
+            scope_depth: 0,    // 当前作用域深度，初始为 0（函数体顶层）
+            explicitly_dropped: Vec::new(),  // 记录已通过 drop() 显式释放的变量，避免 auto-drop 重复释放
         };
 
         // 逐条翻译函数体语句
@@ -201,7 +202,7 @@ impl JIT {
             trans.translate_expr(expr);
         }
 
-        // 读取返回变量的值并生成 return 指令
+        // 读取返回变量的值并生成 return 指令，即变量可以被 def_var 反复重新绑定，每次赋新值。use_var 永远读最新的那次绑定。所以不管函数体里 r 被改了多少次，这里拿到的就是最终值
         let (return_variable, _return_ty) = trans
             .variables
             .get(&the_return.0)
@@ -307,18 +308,39 @@ impl<'a> FunctionTranslator<'a> {
         }
     }
 
-    /// 发射一条 `call array_drop_xxx(val)` IR 指令
+    /// 发射一条 `call array_drop_xxx(val)` IR 指令 —— 内存回收的最终出口。
+    ///
+    /// 无论显式 drop(arr) 还是作用域退出 auto-drop，最终都调用此函数，
+    /// 在 Cranelift IR 中生成对 Rust 运行时释放函数的调用。
+    ///
+    /// 生成的 IR 等价于 C: `int64_t array_drop(int64_t arr_ptr);`
     fn emit_drop_call(&mut self, drop_func_name: &str, val: Value) {
+        // ① 构造 C 函数签名: fn(i64) -> i64
+        //    cranelift-module: make_signature()
+        //    cranelift-codegen: AbiParam, types
         let mut drop_sig = self.module.make_signature();
-        drop_sig.params.push(AbiParam::new(types::I64));
-        drop_sig.returns.push(AbiParam::new(types::I64));
+        drop_sig.params.push(AbiParam::new(types::I64));  // 参数: 数组指针
+        drop_sig.returns.push(AbiParam::new(types::I64)); // 返回: 0
+
+        // ② 在 JIT 模块中声明外部符号 (Linkage::Import = "外部定义")
+        //    cranelift-module: declare_function()
+        //    运行时通过 register_builtins 将 "array_drop" 映射到
+        //    Rust 函数 dynamic_array_drop_i64 的地址
         let drop_callee = self
             .module
             .declare_function(drop_func_name, Linkage::Import, &drop_sig)
             .unwrap();
+
+        // ③ 将模块级符号解析为当前 IR 函数内部可引用的局部句柄
+        //    cranelift-jit: declare_func_in_func()
+        //    类比: 全局符号 → 当前编译单元的导入表条目
         let drop_local = self
             .module
             .declare_func_in_func(drop_callee, self.builder.func);
+
+        // ④ 发射 call 指令: call @array_drop_xxx(val)
+        //    cranelift-frontend: InsertBuilder (通过 self.builder.ins())
+        //    最终由 finalize_definitions 将 call 目标链接到 Rust 运行时地址
         self.builder.ins().call(drop_local, &[val]);
     }
 
@@ -341,21 +363,30 @@ impl<'a> FunctionTranslator<'a> {
     /// (translate_drop 已发射 call array_drop), 并在处理后清理条目, 避免:
     /// 1. 同一作用域内重复 drop
     /// 2. 循环下一次迭代时误跳过同名变量
+    /// fn demo() -> (r: i64) {
+    //a = array [1, 2]        // scope_vars[0] = ["a", "b"]
+    //b = array [3, 4]
+    //{
+    //    c = array [5, 6]    // scope_vars[1] = ["c"]
+    //}
+    //drop(a)
+    //r = 0
+//}
     fn emit_scope_drop(&mut self, depth: usize, return_variable: Option<Variable>) {
         if let Some(vars) = self.scope_analysis.scope_vars.get(&depth) {
             let vars = vars.clone();
             for name in &vars {
                 if let Some((var, ty)) = self.variables.get(name) {
                     if let Some(ret_var) = return_variable
-                        && *var == ret_var
+                        && *var == ret_var    //跳过返回变量
                     {
                         continue;
                     }
-                    if self.explicitly_dropped.contains(var) {
+                    if self.explicitly_dropped.contains(var) {     //跳过已显式 drop 的变量
                         self.explicitly_dropped.retain(|v| v != var);
                         continue;
                     }
-                    if let FrontendType::DynamicArray(elem_ty) = ty {
+                    if let FrontendType::DynamicArray(elem_ty) = ty {  //不是 DynamicArray 不放
                         let drop_func = Self::drop_func_for(elem_ty);
                         let val = self.builder.use_var(*var);
                         self.emit_drop_call(drop_func, val);

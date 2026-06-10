@@ -27,7 +27,7 @@
   - [3.8 执行 — `mem::transmute`](#38-执行--memtransmute)
 - [第四章：端到端完整追踪](#第四章端到端完整追踪)
 - [第五章：附录](#第五章附录)
-
+- [第六章：未实现的或已知bug](#第六章未实现的或已知bug)
 ---
 
 ## 第〇章：快速定位
@@ -1951,3 +1951,140 @@ let result = code_fn();
 | 新增**优化 pass** | ① 新建 `src/my_pass.rs` ② `src/lib.rs` — 加 `pub mod my_pass` ③ `src/jit.rs` `compile()` — 插入调用 |
 | 新增**静态检查** | ① 新建 `src/my_check.rs` ② `src/lib.rs` — 加 `pub mod my_check` ③ `src/jit.rs` `compile()` — 插入调用 |
 | DynamicArray 支持**新元素类型** | ① `runtime/array.rs` — 加函数族（new/push/pop/len/cap/get_ptr/set/drop） ② `runtime/registry.rs` — 注册 ③ `type_checker.rs` — 加签名 + `infer_type` ④ `jit.rs` — `translate_dynamic_array_literal`/`translate_index`/auto-drop 加分支 ⑤ `ownership.rs` — `get_rhs_array_info` 加分支 |
+
+## 第六章：未实现的或已知bug
+
+### 所有权机制：与 RAII 的差距
+
+Toy 的 DynamicArray 底层的 `Drop` 实现是纯正 RAII，但 Toy 语言给它套的外壳——所有权检查器做静态探测、JIT 做批量 emit——偏离了 RAII "作用域即生命周期" 的核心原则。以下是逐项对比。
+
+---
+
+#### 差别 1：释放时机
+
+| | RAII（Rust/C++） | Toy 当前 |
+|---|---|---|
+| 触发点 | 变量离开作用域的那一刻 | 统一推迟到函数末尾 |
+| 嵌套作用域 | 内层变量先释放 | Toy 没有嵌套作用域（花括号只在 `if`/`while` 中出现），所以函数退出即唯一"作用域边界" |
+| 早释放 | 最后一次使用后即可释放 | 做不到——释放时机是函数级别而非变量级别 |
+
+**RAII：**
+
+```rust
+{
+    let a = vec![1, 2, 3];  // a 出生
+    {
+        let b = vec![4, 5];  // b 出生
+    }                         // ← b 在此释放
+    // a 还活着
+}                             // ← a 在此释放
+```
+
+**Toy：**
+
+```toy
+arr = array [1, 2, 3]    // 分配
+// ... 100 行代码 ...
+r = arr[0]
+// arr 一直活着，占用堆内存，直到函数最后一行执行完才释放
+// 即使 arr 在第 2 行之后就不再被使用
+```
+
+---
+
+#### 差别 2：所有权转移
+
+| | RAII（Rust） | Toy 当前 |
+|---|---|---|
+| 语义 | `let b = a;` 是 move，编译期保证 `a` 不可再用 | `r = arr` 只是复制指针值，没有 move |
+| 旧变量 | 不会被 drop | 检查器标记 `Returned`（避免误报泄漏），但 JIT auto-drop 不知道 |
+
+**RAII：**
+
+```rust
+let a = vec![1, 2, 3];
+let b = a;       // a 被 move 到 b
+// println!("{:?}", a);  // ← 编译错误！a 已无效
+// a 不会被 drop，只有 b 在作用域结束时被 drop
+```
+
+**Toy 的两层各说各话：**
+
+```
+Layer 1（检查器）: arr 是 Returned → 编译通过（不报泄漏）
+Layer 2（JIT）:    arr 在 dynamic_arrays 中 → 发射 call array_drop(arr)
+结果:              arr 被释放了，r 指向已释放内存 → 悬垂指针
+```
+
+> Toy 对此的"解决方案"：不要在 Toy 代码里写 `r = arr`。这不是设计，是无能为力。
+
+---
+
+#### 差别 3：参数的生命周期
+
+| | RAII（Rust） | Toy 当前 |
+|---|---|---|
+| 语义 | 签名区分：`&T`（借用）vs `T`（获取所有权） | 全部默认为借用，被调用者不释放参数 |
+| 语法 | 调用方看到 `&` 就知道不会拿走所有权 | 没有语法层面的区分 |
+
+**RAII：**
+
+```rust
+fn borrow(arr: &Vec<i32>) { }     // 借用，调用者保留所有权
+fn consume(arr: Vec<i32>) { }     // 获取所有权，被调用者负责释放
+```
+
+**Toy：** 参数统一不加入 `dynamic_arrays` 追踪列表。被调用者不释放，调用者负责释放。在 Toy 没有 move 语义的前提下这是安全的（避免 double-free），但没有提供"被调用者接管所有权"的选项。
+
+---
+
+#### 差别 4：组合性
+
+| | RAII | Toy 当前 |
+|---|---|---|
+| 嵌套释放 | `struct` 嵌套自动级联 drop | 不支持复合类型，每条 auto-drop 独立 |
+| 元素类型 | 任意类型（含嵌套容器） | 只能存基本类型（`I64`/`F64`/`Complex128`） |
+
+**RAII：**
+
+```rust
+struct Outer { a: Vec<i32>, b: Vec<i32> }
+// Outer 被 drop → a.drop() + b.drop() → 全部释放，自动级联
+```
+
+**Toy：** `DynamicArray` 的元素不能是另一个 `DynamicArray`，因此不存在"释放一个数组需要先释放其元素数组"的递归场景。每条 `call array_drop` 都是对单一堆分配的独立释放。
+
+---
+
+#### 差别 5：失败模式
+
+| | RAII | Toy 当前 |
+|---|---|---|
+| 正确性保证 | 编译器强制，safe Rust 中不可能泄漏/double-free | 检查器尽力覆盖，JIT 兜底，存在已知盲区 |
+
+**盲区清单：**
+
+| 场景 | Layer 1（检查器） | Layer 2（JIT） | 最终结果 |
+|---|---|---|---|
+| 创建后不管 | ✅ `LeakedArray` | — | **编译报错** |
+| 两次 `drop()` | ✅ `DoubleDrop` | — | **编译报错** |
+| `drop()` 后索引 | ✅ `UseAfterDrop` | — | **编译报错** |
+| 传给函数后再 `drop()` | ✅ `DropAfterPassed` | — | **编译报错** |
+| `r = arr` 返回 | ✅ 放行 | ❌ 仍 auto-drop `arr` | **悬垂指针** |
+| `arr = a1; arr = a2` | ❌ `HashMap::insert` 覆盖 | ❌ 旧指针丢失 | **泄漏** |
+| 参数数组 | ❌ 不追踪 | ❌ 不释放 | 靠调用者释放 |
+
+---
+
+#### 总结
+
+| 维度 | RAII | Toy 当前 |
+|---|---|---|
+| 释放触发 | 变量离开作用域 | 函数退出（手动插入 call） |
+| 所有权转移 | 编译期 move，旧变量作废 | 无 move，指针复制 + 检查器保守放行 |
+| 参数语义 | 签名区分 `&` / owned | 全部默认为借用 |
+| 组合性 | `struct` 嵌套自动级联 | 无复合类型，逐一手动 drop |
+| 正确性保证 | 编译器强制 | 检查器尽力 + JIT 兜底 |
+| 失败模式 | safe Rust 零泄漏 | 已知盲区若干 |
+
+Toy 做的不是 RAII，而是**"编译期静态检查 + 函数退出点批量释放"**。那条注释里写的"如果我们想要 RAII，我们应该决定所有权"正是指这个差距：当前的设计选择了简单和保守，而非完整的 RAII 语义。

@@ -195,6 +195,14 @@ impl OwnershipChecker {
     /// - depth == 0（函数顶层）：Owned 数组 = 泄漏（用户忘记 drop/return）
     /// - depth > 0（Block/WhileLoop 内部作用域）：Owned 数组由 JIT auto-drop
     ///   自动释放，不报泄漏
+    ///
+    /// # 为什么按 depth 区分行为
+    ///
+    /// 顶层是函数与调用者的契约边界 —— 数组是返回还是销毁, 必须由程序员显式决策,
+    /// 自动兜底会掩盖资源管理 bug。嵌套作用域内的变量块外不可见, 编译器 100% 确定
+    /// 无后续引用, 自动释放安全且无悬垂指针风险。
+    ///
+    /// 一句话: 顶层强制显式(防泄漏滥用), 嵌套自动释放(防啰嗦)。
     fn close_scope(&mut self, depth: usize) {
         if let Some(vars) = self.scope_vars.get(&depth) {
             let vars = vars.clone();
@@ -219,7 +227,19 @@ impl OwnershipChecker {
             Expr::Assign(name, value) => {
                 let produces_array = self.produces_dynamic_array(value);
 
-                // 赋值给返回变量：源数组所有权转移给调用者
+                // ═══════════════════════════════════════════════════
+                // 情况 1: 赋值给返回变量 r → 所有权转移给调用者
+                // ═══════════════════════════════════════════════════
+                //
+                // r = arr   → arr: Owned→Returned, r: Returned
+                // r = 42    → r 标记 Returned（防后续被误判泄漏）
+                //
+                // 语义: 调用者拿到 r 的指针, 负责最终释放。
+                // FIXME: JIT 的 emit_scope_drop 跳过 return_variable,
+                //   但如果 r 的值来自变量 arr 而非字面量, arr 仍会在 JIT
+                //   层被 auto-drop → r 成为悬垂指针。需要让 JIT 也跳过 arr。
+                //
+                //   当前缓解: 顶层 r = arr 不常见, Toy 示例和测试未触发。
                 if name == return_var {
                     self.arrays.insert(
                         name.clone(),
@@ -228,15 +248,32 @@ impl OwnershipChecker {
                             name: name.clone(),
                         }, self.scope_depth),
                     );
-                    // 源数组标记为 Returned
+                    // 源数组也标记为 Returned (防止 close_scope 误报泄漏)
                     if let Expr::Identifier(src_name) = value.as_ref()
                         && let Some((info, _)) = self.arrays.get_mut(src_name)
                     {
                         info.disposition = ArrayDisposition::Returned;
                     }
-                    // FIXME: 与 JIT auto-drop 信息断层，见 jit.rs
-                } else if produces_array {
-                    // 覆盖检测：如果变量已存在且为 Owned → 旧数组泄漏
+
+                // ═══════════════════════════════════════════════════
+                // 情况 2: RHS 产生新的 DynamicArray → 登记为 Owned
+                // ═══════════════════════════════════════════════════
+                //
+                // a = array [1, 2]        ← 字面量
+                // a = array_new_i64()     ← 构造函数调用
+                //
+                // 两步操作:
+                //   ① 覆盖检测 — 如果 a 已有旧值且为 Owned, 旧指针丢失 = 泄漏
+                //   ② 登记 — (a, Owned, scope_depth) 加入 arrays + scope_vars
+                //
+                // 后续 close_scope 根据 depth 决定:
+                //   depth=0 → 函数结束仍 Owned → LeakedArray
+                //   depth>0 → 作用域退出 → JIT 自动 call array_drop
+
+                //例如a = array [1, 2, 3]
+                //a = array [4, 5, 6]  旧数组永远丢失，泄漏了
+                } else if produces_array { 
+                    // ① 覆盖检测
                     if let Some((old_info, _)) = self.arrays.get(name)
                         && old_info.disposition == ArrayDisposition::Owned
                     {
@@ -244,7 +281,7 @@ impl OwnershipChecker {
                             name: format!("{} (previous value overwritten)", name),
                         });
                     }
-                    // 登记到当前作用域
+                    // ② 登记到当前作用域
                     self.arrays.insert(
                         name.clone(),
                         (ArrayInfo {
@@ -258,7 +295,7 @@ impl OwnershipChecker {
                         .push(name.clone());
                 }
 
-                // 递归分析 RHS 子表达式
+                // 递归分析 RHS: 处理嵌套的 Call(所有权传递) / Index(UseAfterDrop)
                 self.analyze_expr(value, return_var);
             }
 
@@ -266,6 +303,24 @@ impl OwnershipChecker {
                 self.mark_dropped(name);
             }
 
+            // ═══════════════════════════════════════════════════
+            // 函数调用 — 实参所有权转移 (Owned → Passed)
+            // ═══════════════════════════════════════════════════
+            //
+            // 任何以 DynamicArray 作为实参的函数调用, 都视为所有权"已消费"。
+            //
+            // 例: array_push(arr, 4)  → arr: Owned → Passed
+            //     array_len(arr)       → arr: Owned → Passed
+            //
+            // 为什么是 Passed 而非 Dropped?
+            //   内置函数都是借用语义, 数组实际还活着, 运行时由 JIT 兜底释放。
+            //   Passed = "我不再负责显式管理, 但数据还在"。
+            //
+            // 副作用: drop(arr) 在函数调用后会报 DropAfterPassed,
+            //   因为检查器认为 arr 已不属于你。这是保守的过近似——
+            //   宁可多拦合法操作, 也不能放行 double-free。
+            //
+            // 过近似: 无法区分"真消费"和"借用"。所有内置函数统一按消费处理。
             Expr::Call(_func_name, args) => {
                 for arg in args {
                     if let Expr::Identifier(name) = arg
@@ -277,6 +332,21 @@ impl OwnershipChecker {
                 }
             }
 
+            // ═══════════════════════════════════════════════════
+            // 条件分支 — 保守策略, 不做 meet-point 分析
+            // ═══════════════════════════════════════════════════
+            //
+            // IfElse 不创建新作用域 (scope_depth 不变), 两个分支内的变量
+            // 都登记到父作用域。不做跨分支状态合并。
+            //
+            // 例:
+            //   if flag { a = array [1]; drop(a) }  → a: Owned → Dropped
+            //   else    { b = array [2] }            → b: Owned, 没处理
+            //
+            // 如果发生在 depth=0 顶层: b → LeakedArray 报错
+            // 如果发生在 depth>0 块内: b → JIT 自动释放, 不报错
+            //
+            // 增强方向: 分支快照 + meet-point 取交集, 可消除 else 路径的假阳性。
             Expr::IfElse(cond, then_body, else_body) => {
                 self.analyze_expr(cond, return_var);
                 for stmt in then_body {
@@ -285,10 +355,25 @@ impl OwnershipChecker {
                 for stmt in else_body {
                     self.analyze_expr(stmt, return_var);
                 }
-                // 保守策略：不做跨分支 meet-point 分析
             }
 
-            // While 循环：体作为独立作用域，每次迭代结束时由 JIT 释放
+            // ═══════════════════════════════════════════════════
+            // While 循环 — 体作为独立作用域, 每次迭代结束时释放
+            // ═══════════════════════════════════════════════════
+            //
+            // 进入循环体前 push 新作用域 (scope_depth+1), 体分析完后 close_scope。
+            // 检查器只分析 AST 一次 (静态分析, 不模拟循环执行), 它不关心循环
+            // 跑多少次——只需确保体内部变量出现在 scope_vars 中, JIT 就会在
+            // 每次迭代末尾 emit call array_drop。
+            //
+            // 例:
+            //   while i < 3 {
+            //       tmp = array [i]   // scope_vars[1] = ["tmp"]
+            //   }
+            //   → 每次迭代结束: JIT 发射 call array_drop(tmp)
+            //   → 不释放会导致前 N-1 次迭代的数组泄漏
+            //
+            // 与 Block 的区别: 仅在 JIT 端 —— Block 释放一次, While 每次迭代释放。
             Expr::WhileLoop(cond, body) => {
                 self.analyze_expr(cond, return_var);
                 self.scope_depth += 1;
@@ -298,7 +383,18 @@ impl OwnershipChecker {
                 self.scope_depth -= 1;
             }
 
-            // Block：嵌套作用域
+            // ═══════════════════════════════════════════════════
+            // Block — 通用嵌套作用域, 退出时 JIT 自动释放
+            // ═══════════════════════════════════════════════════
+            //
+            // 例:
+            //   {
+            //       a = array [1, 2, 3]   // scope_vars[1] = ["a"]
+            //   }
+            //   → 块退出: JIT 发射 call array_drop(a)
+            //
+            // 所有权检查器按"无需显式 drop"对待: close_scope(depth>0)
+            // 不报泄漏, 只从 arrays 中移除记录。释放责任在 JIT。
             Expr::Block(body) => {
                 self.scope_depth += 1;
                 self.scope_vars.insert(self.scope_depth, Vec::new());
@@ -307,6 +403,21 @@ impl OwnershipChecker {
                 self.scope_depth -= 1;
             }
 
+            // ═══════════════════════════════════════════════════
+            // 索引访问 — 检测 UseAfterDrop
+            // ═══════════════════════════════════════════════════
+            //
+            // 例:
+            //   drop(arr)              → arr: Owned → Dropped
+            //   r = arr[0]             → Index(arr, 0)
+            //     检查 arr 的 disposition:
+            //       Dropped  → UseAfterDrop("arr") ❌
+            //       Passed   → 放行 (数据还在, 借用访问)
+            //       Owned    → 放行
+            //       Returned → 放行
+            //
+            // 只有用户显式 drop() 后的访问被拦截。Passed 状态下数组
+            // 仍存活 (只是检查器不再追踪显式释放), 允许读访问。
             Expr::Index(base, idx) => {
                 if let Expr::Identifier(name) = base.as_ref()
                     && let Some((info, _)) = self.arrays.get(name)

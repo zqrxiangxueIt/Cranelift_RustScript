@@ -1,0 +1,195 @@
+fn main() -> (r: i64) {
+    puts("========================================\n")
+    puts("  Toy Language - All Features Demo\n")
+    puts("========================================\n")
+
+    puts("\n[1] Basic Arithmetic (i64)\n")
+    a = 10
+    b = 3
+    printf("a + b = %d\n", a + b)
+    printf("a - b = %d\n", a - b)
+    printf("a * b = %d\n", a * b)
+    printf("a / b = %d\n", a / b)
+
+    puts("\n[2] Type Casting (i32, i64, i128, f32, f64)\n")
+    i32_val = 100 as i32
+    i64_val = i32_val as i64
+    i128_val = i64_val as i128
+    back_i64 = i128_val as i64
+    printf("Cast chain i32->i64->i128->i64 = %d\n", back_i64)
+    f64_from_int = 42 as f64
+    print_f64(f64_from_int)
+    f64_val = 3.14
+    f32_val = f64_val as f32
+    back_f64 = f32_val as f64
+    print_f64(back_f64)
+
+    puts("\n[3] Floating-Point Arithmetic\n")
+    x = 3.14
+    y = 2.71
+    print_f64(x + y)
+    print_f64(x - y)
+    print_f64(x * y)
+    print_f64(x / y)
+
+    puts("\n[4] Comparison Operators\n")
+    p = 10
+    q = 20
+    if p < q {
+        puts("p < q: true\n")
+    } else {
+        puts("p < q: false\n")
+    }
+    if p == 10 {
+        puts("p == 10: true\n")
+    } else {
+        puts("p == 10: false\n")
+    }
+    if p != q {
+        puts("p != q: true\n")
+    } else {
+        puts("p != q: false\n")
+    }
+    if q > 15 {
+        puts("q > 15: true\n")
+    } else {
+        puts("q > 15: false\n") 
+    }
+    if q >= 20 {
+        puts("q >= 20: true\n")
+    } else {
+        puts("q >= 20: false\n")
+    }
+    if p <= 10 {
+        puts("p <= 10: true\n")
+    } else {
+        puts("p <= 10: false\n")
+    }
+
+    puts("\n[5] If-Else Branching (Grade)\n")
+    score = 85
+    if score >= 90 {
+        puts("Grade: A\n")
+    } else {
+        if score >= 80 {
+            puts("Grade: B\n")
+        } else {
+            if score >= 70 {
+                puts("Grade: C\n")
+            } else {
+                puts("Grade: D or below\n")
+            }
+        }
+    }
+
+    puts("\n[6] While Loop - Sum 0..9\n")
+    i = 0
+    total = 0
+    while i < 10 {
+        total = total + i
+        i = i + 1
+    }
+    printf("Sum 0..9 = %d\n", total)
+
+    puts("\n[7] While Loop - Countdown\n")
+    i = 5
+    while i > 0 {
+        printf("  %d...\n", i)
+        i = i - 1
+    }
+    puts("Liftoff!\n")
+
+    puts("\n[8] Fixed Array (i64) - Indexing\n")
+    arr = [10, 20, 30, 40, 50]
+    printf("arr[0] = %d\n", arr[0])
+    printf("arr[2] = %d\n", arr[2])
+    printf("arr[4] = %d\n", arr[4])
+
+    puts("\n[9] Array Sum via While Loop\n")
+    sum_arr = 0
+    idx = 0
+    while idx < 5 {
+        sum_arr = sum_arr + arr[idx]
+        idx = idx + 1
+    }
+    printf("Sum of arr = %d\n", sum_arr)
+
+    puts("\n[10] Fixed Array (f64) + toy_sum_array\n")
+    farr = [1.5, 2.5, 3.5, 4.5]
+    print_f64(farr[0])
+    print_f64(farr[1])
+    print_f64(farr[2])
+    print_f64(farr[3])
+    fsum = toy_sum_array(farr) as f64
+    print_f64(fsum)
+
+    puts("\n[11] Dynamic Array - Push / Index / Len\n")
+    darr = array []
+    array_push(darr, 100)
+    array_push(darr, 200)
+    array_push(darr, 300)
+    array_push(darr, 400)
+    array_push(darr, 500)
+    darr_len = array_len(darr)
+    printf("After 5 pushes, length: %d\n", darr_len)
+    printf("darr[0] = %d\n", darr[0])
+    printf("darr[2] = %d\n", darr[2])
+    printf("darr[4] = %d\n", darr[4])
+
+    puts("\n[12] Dynamic Array - Set / Pop\n")
+    array_set(darr, 1, 999)
+    printf("After array_set(darr, 1, 999): darr[1] = %d\n", darr[1])
+    popped = array_pop(darr)
+    printf("array_pop() returned: %d\n", popped)
+    darr_len = array_len(darr)
+    printf("Length after pop: %d\n", darr_len)
+
+    puts("\n[13] drop() is optional - auto-freed at function exit\n")
+    puts("(any dynamic array passed to a function is auto-released by jit.rs cleanup)\n")
+
+    puts("\n[14] Complex Number Arithmetic (Complex128)\n")
+    c1 = 1.5 + 2.5i
+    c2 = 0.5 + 0.5i
+    c_sum = c1 + c2
+    c_diff = c1 - c2
+    c_prod = c1 * c2
+    c_quot = c1 / c2
+    puts("Computed: c1+c2, c1-c2, c1*c2, c1/c2\n")
+
+    puts("\n[15] Math Library Functions\n")
+    print_f64(sin(0.0))
+    print_f64(cos(0.0))
+    print_f64(tan(0.0))
+    print_f64(sqrt(16.0))
+    print_f64(pow(2.0, 10.0))
+    print_f64(log(2.71828))
+    print_f64(exp(1.0))
+    print_f64(ceil(2.3))
+    print_f64(floor(2.7))
+
+    puts("\n[16] String & Printf Formatting\n")
+    puts("Hello from Toy!\n")
+    name = "World"
+    num = 42
+    printf("Greeting: %s!\n", name)
+    printf("Number: %d\n", num)
+    puts("Combined: World = 42\n")
+
+    puts("\n[17] putchar (Char-by-Char Output)\n")
+    putchar(72)
+    putchar(105)
+    putchar(33)
+    putchar(10)
+
+    puts("\n[18] Random Number\n")
+    rv1 = rand()
+    rv2 = rand()
+    printf("rand() call 1 = %d\n", rv1)
+    printf("rand() call 2 = %d\n", rv2)
+
+    puts("\n========================================\n")
+    puts("  All features demonstrated!\n")
+    puts("========================================\n")
+
+    r = 0
+}

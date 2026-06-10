@@ -1,6 +1,5 @@
 use cranelift_jit_demo::jit::JIT;
 use criterion::{Criterion, criterion_group, criterion_main};
-use raii_demo::DynamicArray;
 use std::hint::black_box;
 
 fn bench_math(c: &mut Criterion) {
@@ -57,7 +56,7 @@ fn bench_dynamic_array(c: &mut Criterion) {
 fn bench_native_dynamic_array(c: &mut Criterion) {
     c.bench_function("native_dynamic_array", |b| {
         b.iter(|| {
-            let mut arr = DynamicArray::<i64>::new();
+            let mut arr = Vec::<i64>::new();
             for i in 1..=10 {
                 arr.push(i);
             }

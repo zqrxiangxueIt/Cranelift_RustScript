@@ -1,0 +1,75 @@
+fn main() -> (r: i64) {
+    puts("========================================\n")
+    puts("  Ownership Checker - Full Demo\n")
+    puts("========================================\n")
+
+    puts("\n--- [1] Pass-to-Function Enables Auto-Drop ---\n")
+    puts("  Create array, pass it to array_len() to mark it Passed.\n")
+    puts("  The checker then knows it's consumed and won't report leak.\n")
+    puts("  At runtime, jit.rs auto-drops it at function exit.\n")
+    a1 = array [10, 20, 30]
+    v1 = a1[0]
+    printf("  a1[0] = %d (expected 10)\n", v1)
+    len1 = array_len(a1)
+    printf("  a1 has %d elements (expected 3)\n", len1)
+
+    puts("\n--- [2] Explicit drop() ---\n")
+    puts("  Create array, use it, then explicitly drop() it.\n")
+    puts("  After drop(), the array is no longer accessible.\n")
+    a2 = array [100, 200, 300]
+    v2 = a2[1]
+    printf("  a2[1] = %d (expected 200)\n", v2)
+    drop(a2)
+
+    puts("\n--- [3] Passed to Function -> Auto-Drop ---\n")
+    puts("  Passing a dynamic array to array_push() marks it as Passed.\n")
+    puts("  The ownership checker considers its ownership 'consumed'.\n")
+    puts("  Runtime: jit.rs still auto-drops it at function exit.\n")
+    puts("  Key rule: do NOT call drop() after passing to a function,\n")
+    puts("  or the checker will report DropAfterPassed.\n")
+    a3 = array [1, 2, 3]
+    array_push(a3, 4)
+    array_push(a3, 5)
+    len3 = array_len(a3)
+    printf("  a3 has %d elements after 2 pushes (expected 5)\n", len3)
+    v3 = a3[4]
+    printf("  a3[4] = %d (expected 5)\n", v3)
+
+    puts("\n--- [4] Multiple Arrays Tracked Independently ---\n")
+    puts("  The checker maintains a separate state for each array.\n")
+    a4 = array [1, 2]
+    a5 = array [3, 4]
+    v4 = a4[0]
+    v5 = a5[0]
+    printf("  a4[0] = %d\n", v4)
+    printf("  a5[0] = %d\n", v5)
+    drop(a4)
+    drop(a5)
+
+    puts("\n--- [5] Array Built from array_new_i64 ---\n")
+    puts("  array_new_i64() returns a fresh empty dynamic array.\n")
+    puts("  Ownership rules are the same as array [...] literals.\n")
+    a6 = array_new_i64()
+    array_push(a6, 42)
+    array_push(a6, 99)
+    len6 = array_len(a6)
+    printf("  a6 has %d elements (expected 2)\n", len6)
+    v6 = a6[0]
+    printf("  a6[0] = %d (expected 42)\n", v6)
+
+    puts("\n--- [6] Mix of drop() and auto-drop ---\n")
+    puts("  Some arrays are explicitly dropped, some are auto-dropped.\n")
+    puts("  Both are valid patterns.\n")
+    a7 = array [7, 7, 7]
+    a8 = array [8, 8, 8]
+    drop(a7)
+    len8 = array_len(a8)
+    printf("  a7 was dropped; a8 lives (len=%d) and will be auto-dropped.\n", len8)
+
+    puts("\n========================================\n")
+    puts("  All patterns executed successfully.\n")
+    puts("  No ownership errors reported!\n")
+    puts("========================================\n")
+
+    r = 0
+}
